@@ -225,16 +225,7 @@ public final class AppleTopStatus53 {
                 bluetooth.setPadding(dp(12), dp(7), dp(12), dp(7));
                 bluetooth.setMinHeight(dp(42));
                 bluetooth.setMinWidth(dp(48));
-                bluetooth.setOnClickListener(v -> {
-                    try { activity.startActivity(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS)); }
-                    catch (Exception first) {
-                        try { activity.startActivity(new Intent(Settings.ACTION_WIRELESS_SETTINGS)); }
-                        catch (Exception second) {
-                            try { activity.startActivity(new Intent(Settings.ACTION_SETTINGS)); }
-                            catch (Exception ignored) { }
-                        }
-                    }
-                });
+                bluetooth.setOnClickListener(v -> AppleBluetoothSettings55.open(activity));
             }
             if (bluetooth.getParent() != row) {
                 if (bluetooth.getParent() instanceof ViewGroup)
