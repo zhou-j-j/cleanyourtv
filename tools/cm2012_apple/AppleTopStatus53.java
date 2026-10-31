@@ -13,6 +13,8 @@ import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.StateListDrawable;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
@@ -52,6 +54,7 @@ public final class AppleTopStatus53 {
         private final Handler handler = new Handler(Looper.getMainLooper());
         private TextView network;
         private TextView bluetooth;
+        private TextView styledNetwork;
         private boolean detached;
 
         Controller(Activity a, LinearLayout h, TextView n) {
@@ -76,6 +79,7 @@ public final class AppleTopStatus53 {
                 if (network == null || !network.isShown()) network = findNetwork(header);
                 if (network == null && original.isShown()) network = original;
                 if (network != null) {
+                    ensureNetworkPill(network);
                     drawNetwork(network);
                     ensureBluetoothNextTo(network);
                     if (bluetooth != null) drawBluetooth(bluetooth);
@@ -103,6 +107,45 @@ public final class AppleTopStatus53 {
                 }
             }
             return null;
+        }
+
+        /** A matched Apple-style capsule for both buttons, including D-pad focus. */
+        private StateListDrawable capsule() {
+            StateListDrawable d = new StateListDrawable();
+            d.addState(new int[]{android.R.attr.state_focused},
+                    capsuleShape(0x665d84d3, 0xffdcecff, 2));
+            d.addState(new int[]{android.R.attr.state_pressed},
+                    capsuleShape(0x665d84d3, 0xffdcecff, 2));
+            d.addState(new int[]{}, capsuleShape(0x55313e5f, 0x77bbcde7, 1));
+            return d;
+        }
+        private Drawable capsuleShape(int bg, int stroke, int width) {
+            GradientDrawable shape = new GradientDrawable();
+            shape.setColor(bg);
+            shape.setCornerRadius(dp(999));
+            shape.setStroke(dp(width), stroke);
+            return shape;
+        }
+        private void ensureNetworkPill(TextView target) {
+            if (styledNetwork == target) return;
+            styledNetwork = target;
+            target.setBackground(capsule());
+            target.setGravity(Gravity.CENTER);
+            target.setFocusable(true);
+            target.setClickable(true);
+            target.setMinHeight(dp(42));
+            target.setMinWidth(dp(48));
+            target.setPadding(dp(12), dp(7), dp(12), dp(7));
+            // Preserve the existing network pill's click handler, if present.
+            // Some CleanYourTV forks have only a wrapper listener; provide a
+            // sensible fallback when the icon itself was not clickable.
+            if (!target.hasOnClickListeners()) target.setOnClickListener(v -> {
+                try { activity.startActivity(new Intent(Settings.ACTION_WIRELESS_SETTINGS)); }
+                catch (Exception first) {
+                    try { activity.startActivity(new Intent(Settings.ACTION_SETTINGS)); }
+                    catch (Exception ignored) { }
+                }
+            });
         }
 
         private void drawNetwork(TextView target) {
@@ -151,8 +194,8 @@ public final class AppleTopStatus53 {
             // widths, never change constrained/MATCH_PARENT parent layouts.
             ViewGroup.LayoutParams lp = target.getLayoutParams();
             if (lp != null && lp.width == ViewGroup.LayoutParams.WRAP_CONTENT) {
-                target.setMinimumWidth(dp(46));
-                target.setPadding(dp(11), target.getPaddingTop(), dp(11), target.getPaddingBottom());
+                target.setMinimumWidth(dp(48));
+                target.setPadding(dp(12), target.getPaddingTop(), dp(12), target.getPaddingBottom());
             }
         }
 
@@ -178,25 +221,27 @@ public final class AppleTopStatus53 {
                 bluetooth.setFocusable(true);
                 bluetooth.setClickable(true);
                 bluetooth.setContentDescription("蓝牙状态，按确定键打开蓝牙设置");
-                Drawable background = target.getBackground();
-                if (background != null && background.getConstantState() != null) {
-                    bluetooth.setBackground(background.getConstantState().newDrawable().mutate());
-                }
+                bluetooth.setBackground(capsule());
+                bluetooth.setPadding(dp(12), dp(7), dp(12), dp(7));
+                bluetooth.setMinHeight(dp(42));
+                bluetooth.setMinWidth(dp(48));
                 bluetooth.setOnClickListener(v -> {
-                    try {
-                        activity.startActivity(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS));
-                    } catch (Exception first) {
-                        try { activity.startActivity(new Intent(Settings.ACTION_SETTINGS)); }
-                        catch (Exception ignored) { }
+                    try { activity.startActivity(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS)); }
+                    catch (Exception first) {
+                        try { activity.startActivity(new Intent(Settings.ACTION_WIRELESS_SETTINGS)); }
+                        catch (Exception second) {
+                            try { activity.startActivity(new Intent(Settings.ACTION_SETTINGS)); }
+                            catch (Exception ignored) { }
+                        }
                     }
                 });
             }
             if (bluetooth.getParent() != row) {
                 if (bluetooth.getParent() instanceof ViewGroup)
                     ((ViewGroup) bluetooth.getParent()).removeView(bluetooth);
-                LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(dp(46),
-                        target.getHeight() > 0 ? target.getHeight() : dp(42));
-                p.leftMargin = dp(7);
+                LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(dp(48),
+                        Math.max(dp(42), target.getHeight()));
+                p.leftMargin = dp(10);
                 row.addView(bluetooth, Math.min(netIndex + 1, row.getChildCount()), p);
             }
         }
