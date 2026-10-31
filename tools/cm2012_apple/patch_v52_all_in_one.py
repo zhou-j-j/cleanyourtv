@@ -1,219 +1,131 @@
 #!/usr/bin/env python3
-"""CM201-2 V5.2 ONE-PASS source patch for the existing V5.1 GitHub workflow.
+# -*- coding: utf-8 -*-
+"""CM201-2 V5.2.1: visible network status + App Library config + online playlist.
 
-- green/red Ethernet status using Android NET_CAPABILITY_VALIDATED
-- Wi-Fi 0..4 RSSI icon (10 seconds while Home foreground)
-- library: short OK opens, long OK manage Add/Remove Home, App info, Uninstall
-- do not edit screensaver or network-settings click targets
+Run from GitHub Actions *after* patch_controlcenter.py and patch_v5_features.py,
+and before Gradle. Only one V5.2 patch command should be present.
 
-Exits rather than guessing if key code anchors diverge from expected CleanYourTV layout.
+Importantly, patch_v5_features.py ALREADY inserts the native uninstall menu.  Do
+not add a second uninstall action as previous V5.2 builds accidentally did.
 """
+from pathlib import Path
 import json
 import re
-from pathlib import Path
+import shutil
+import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-MAIN = ROOT / 'launcher/app/src/main/java/com/gathin/tvhome/MainActivity.java'
-LIBRARY = MAIN.with_name('AppLibraryDialog.java')
-DRAWABLE_FROM = Path(__file__).with_name('NetworkStatusDrawable.java')
-DRAWABLE_TO = MAIN.with_name('NetworkStatusDrawable.java')
-CONFIG_XML = ROOT / 'launcher/app/src/main/res/values/config.xml'
+HERE = Path(__file__).resolve().parent
+JAVA = ROOT / 'launcher/app/src/main/java/com/gathin/tvhome'
+MAIN = JAVA / 'MainActivity.java'
+LIB = JAVA / 'AppLibraryDialog.java'
+CONFIG = ROOT / 'launcher/app/src/main/res/values/config.xml'
+MANIFEST = ROOT / 'launcher/app/src/main/AndroidManifest.xml'
+REPLACEMENTS = (
+    'AppleNetworkBadge.java',
+    'NetworkStatusDrawable.java',
+    'AppleAerialDream.java',
+    'AppleAerialSettingsActivity.java',
+)
 
-for f in (MAIN, LIBRARY, DRAWABLE_FROM, CONFIG_XML):
+
+def die(reason):
+    sys.exit('ERROR V5.2.1: ' + reason)
+
+
+for f in (MAIN, LIB, CONFIG, MANIFEST, *(HERE / s for s in REPLACEMENTS),
+          *(JAVA / s for s in ('AppleAerialDream.java', 'AppleAerialSettingsActivity.java'))):
     if not f.is_file():
-        raise SystemExit(f'ERROR: Missing {f}. V5.1 source must be prepared before V5.2 patch.')
+        die('missing file: ' + str(f))
 
 main = MAIN.read_text(encoding='utf-8')
-lib = LIBRARY.read_text(encoding='utf-8')
-config_xml = CONFIG_XML.read_text(encoding='utf-8')
+lib = LIB.read_text(encoding='utf-8')
+conf = CONFIG.read_text(encoding='utf-8')
+manifest = MANIFEST.read_text(encoding='utf-8')
 
-FIELDS = '''    // CM2012_V52_DUAL_NETWORK: poll RSSI while Home is visible.
-    private int cm2012NetMode = -1;
-    private int cm2012NetLevel = -1;
-    private boolean cm2012EthernetOnline = false;
-    private final Runnable cm2012SignalPoll = new Runnable() {
-        @Override public void run() {
-            if (!resumed) return;
-            if (btnWifi != null && btnWifi.getVisibility() == View.VISIBLE) updateWifiLabel();
-            handler.postDelayed(this, 10000L);
-        }
-    };
-'''
+# In the V4 patch the top-row visual implementation is AppleTopMenu.attach().
+# Install a lifecycle-bound updater *after* its attachment and use the actual
+# header view rather than assuming MainActivity's original Wifi drawable is visible.
+HEADER = '''        AppleTopMenu.attach(this,
+                (android.widget.LinearLayout) findViewById(R.id.topButtons),
+                btnInputs, btnWifi, btnSettings);'''
+BADGE = '''
+        // CM2012_V521_VISIBLE_NETWORK_BADGE: update the actual visible pill.
+        AppleNetworkBadge.attach(this,
+                (android.widget.LinearLayout) findViewById(R.id.topButtons), btnWifi);'''
+if main.count(HEADER) != 1:
+    die('cannot find V4 AppleTopMenu.attach; MainActivity needs source-specific review')
+if 'CM2012_V521_VISIBLE_NETWORK_BADGE' not in main:
+    main = main.replace(HEADER, HEADER + BADGE, 1)
 
-# Draw the active transport, not an invented RSSI value for wired Ethernet.
-# If an Ethernet interface is registered but offline, keep its red RJ45 icon.
-NETWORK = '''            // CM2012_V52_ETHERNET_COLOR: active route, Wi-Fi RSSI, and validated Ethernet.
-            int cmMode = NetworkStatusDrawable.DISCONNECTED;
-            int cmLevel = 0;
-            boolean cmEthOnline = false;
-            try {
-                android.net.ConnectivityManager cm =
-                        (android.net.ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
-                android.net.NetworkInfo active = cm == null ? null : cm.getActiveNetworkInfo();
-                android.net.NetworkInfo eth = cm == null ? null :
-                        cm.getNetworkInfo(android.net.ConnectivityManager.TYPE_ETHERNET);
-                if (active != null && active.getType() == android.net.ConnectivityManager.TYPE_WIFI
-                        && active.isConnected()) {
-                    cmMode = NetworkStatusDrawable.WIFI;
-                    android.net.wifi.WifiManager wm =
-                            (android.net.wifi.WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
-                    android.net.wifi.WifiInfo wi = wm == null ? null : wm.getConnectionInfo();
-                    if (wi != null && wi.getRssi() > -127 && wi.getRssi() < 0) {
-                        cmLevel = android.net.wifi.WifiManager.calculateSignalLevel(wi.getRssi(), 5);
-                    }
-                } else if ((active != null && active.getType() == android.net.ConnectivityManager.TYPE_ETHERNET)
-                        || eth != null) {
-                    cmMode = NetworkStatusDrawable.ETHERNET;
-                    boolean linkConnected = eth != null && eth.isConnected();
-                    if (!linkConnected && active != null
-                            && active.getType() == android.net.ConnectivityManager.TYPE_ETHERNET) {
-                        linkConnected = active.isConnected();
-                    }
-                    if (linkConnected && cm != null) {
-                        android.net.Network network = cm.getActiveNetwork();
-                        android.net.NetworkCapabilities caps = network == null ? null :
-                                cm.getNetworkCapabilities(network);
-                        // VALIDATED means Android has successfully checked internet reachability.
-                        // Some operator firmwares never set it, then a working Ethernet may look red.
-                        cmEthOnline = caps != null && caps.hasTransport(
-                                android.net.NetworkCapabilities.TRANSPORT_ETHERNET)
-                                && caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED);
-                    }
-                }
-            } catch (RuntimeException ignored) {
-                // Never show green when connectivity cannot be verified.
-            }
-            if (icon != wifiIcon || cmMode != cm2012NetMode
-                    || cmLevel != cm2012NetLevel || cmEthOnline != cm2012EthernetOnline) {
-                wifiIcon = icon;
-                cm2012NetMode = cmMode;
-                cm2012NetLevel = cmLevel;
-                cm2012EthernetOnline = cmEthOnline;
-                btnWifi.setCompoundDrawablesRelativeWithIntrinsicBounds(
-                        new NetworkStatusDrawable(density, cmMode, cmLevel, cmEthOnline),
-                        null, null, null);
-            }'''
+# The earlier V5.2 injected another uninstall before app-info, even though V5
+# had already inserted cm2012_uninstall. If a fork has retained that injection,
+# remove only the exact added block and keep the V5 native uninstall intact.
+MARK = '        // CM2012_V52_UNINSTALL_ACTION: only ordinary user apps, via Android confirmation UI.'
+END = '        Intent info = SystemSettings.appInfo(activity, pkg);'
+if MARK in lib:
+    if lib.count(MARK) != 1 or lib.count(END) != 1:
+        die('old V5.2 uninstall layout changed; refusing risky menu edit')
+    i = lib.index(MARK)
+    j = lib.index(END, i)
+    lib = lib[:i] + lib[j:]
 
-OLD_ICON = '''            if (icon != wifiIcon) {
-                wifiIcon = icon;
-                btnWifi.setCompoundDrawablesRelativeWithIntrinsicBounds(icon, 0, 0, 0);
-            }'''
+# The V5 feature step must have already installed one uninstall entry.
+if lib.count('addAction(rows, R.string.cm2012_uninstall') != 1:
+    die('expected exactly one V5 uninstall menu action; check patch_v5_features.py')
+# Preserve upstream dynamic Add/Remove Home logic (the menu uses the app's
+# current Home membership); don't graft in guessed additional menu actions.
+if 'LibraryApps.okOpens(selectionMode, okOpens' not in lib:
+    die('AppLibraryDialog short-OK/long-OK hooks differ from expected upstream')
 
-# Must override the launcher's default white compound-drawable tint;
-# otherwise wired red/green becomes white on the box.
-OLD_TINT = '''            if (wifiOnlineTint != null && btnWifi.getCompoundDrawableTintList() != tint) {
-                btnWifi.setCompoundDrawableTintList(tint);
-            }'''
-NEW_TINT = '''            // CM2012_V52_NO_ICON_TINT: preserve the drawable's green/red/white pixels.
-            if (btnWifi.getCompoundDrawableTintList() != null) {
-                btnWifi.setCompoundDrawableTintList(null);
-            }'''
-
-# Upgrade the previous V5.2 patch if it was added before; otherwise patch clean V5.1.
-if 'CM2012_V52_ETHERNET_COLOR' not in main:
-    if 'CM2012_V52_DUAL_NETWORK' in main:
-        old_start = '            // CM2012_V52_DUAL_NETWORK: active route decides icon, RSSI only for Wi-Fi.'
-        old_end = '''                        new NetworkStatusDrawable(density, cmMode, cmLevel), null, null, null);
-            }'''
-        field = '    private int cm2012NetLevel = -1;'
-        if main.count(old_start) != 1 or main.count(old_end) != 1 or main.count(field) != 1:
-            raise SystemExit('ERROR: Existing dual-network patch differs. No files written.')
-        a = main.index(old_start)
-        b = main.index(old_end, a) + len(old_end)
-        main = main[:a] + NETWORK + main[b:]
-        main = main.replace(field, field + '\n    private boolean cm2012EthernetOnline = false;', 1)
-    else:
-        anchors = ('    private int wifiIcon;',
-                   '        handler.postDelayed(minuteTick, MINUTE_MS);',
-                   '        handler.removeCallbacks(minuteTick);')
-        if main.count(OLD_ICON) != 1 or any(main.count(a) != 1 for a in anchors):
-            raise SystemExit('ERROR: MainActivity layout differs. No files written.')
-        main = main.replace(anchors[0], anchors[0] + '\n' + FIELDS, 1)
-        main = main.replace(OLD_ICON, NETWORK, 1)
-        main = main.replace(anchors[1], anchors[1] + '\n        handler.removeCallbacks(cm2012SignalPoll);\n        handler.postDelayed(cm2012SignalPoll, 10000L);', 1)
-        main = main.replace(anchors[2], anchors[2] + '\n        handler.removeCallbacks(cm2012SignalPoll);', 1)
-if 'CM2012_V52_NO_ICON_TINT' not in main:
-    if main.count(OLD_TINT) != 1:
-        raise SystemExit('ERROR: Cannot find unique drawable-tint block. No files written.')
-    main = main.replace(OLD_TINT, NEW_TINT, 1)
-
-# AppLibraryDialog in CleanYourTV already has long-press menu logic,
-# but standard menu lacks an explicit Uninstall entry. Add one only for user-installed apps.
-# Android's own UI still requests final uninstall confirmation.
-if 'CM2012_V52_UNINSTALL_ACTION' not in lib:
-    lib_anchor = '''        Intent info = SystemSettings.appInfo(activity, pkg);'''
-    lib_insertion = '''        // CM2012_V52_UNINSTALL_ACTION: only ordinary user apps, via Android confirmation UI.
-        try {
-            android.content.pm.ApplicationInfo installed =
-                    activity.getPackageManager().getApplicationInfo(pkg, 0);
-            if ((installed.flags & android.content.pm.ApplicationInfo.FLAG_SYSTEM) == 0) {
-                addAction(rows, "卸载", () -> {
-                    Intent delete = new Intent(Intent.ACTION_DELETE,
-                            android.net.Uri.parse("package:" + pkg));
-                    close();
-                    try { activity.startActivity(delete); }
-                    catch (ActivityNotFoundException | SecurityException err) {
-                        Toast.makeText(activity, "无法打开系统卸载界面", Toast.LENGTH_SHORT).show();
-                    }
-                });
-            }
-        } catch (PackageManager.NameNotFoundException | SecurityException ignored) {
-            // App was removed or restricted; omit Uninstall.
-        }
-'''
-    method_anchor = '''    private void addAction(LinearLayout rows, int label, Runnable action) {
-        View row = activity.getLayoutInflater().inflate(R.layout.item_input, rows, false);
-        ((TextView) row.findViewById(R.id.title)).setText(label);'''
-    method_replace = '''    private void addAction(LinearLayout rows, int label, Runnable action) {
-        addAction(rows, activity.getString(label), action);
-    }
-    private void addAction(LinearLayout rows, String label, Runnable action) {
-        View row = activity.getLayoutInflater().inflate(R.layout.item_input, rows, false);
-        ((TextView) row.findViewById(R.id.title)).setText(label);'''
-    if lib.count(lib_anchor) != 1 or lib.count(method_anchor) != 1:
-        raise SystemExit('ERROR: AppLibraryDialog menu layout differs. No files written.')
-    if 'holder.itemView.setOnLongClickListener(selectionMode ? null' not in lib or 'LibraryApps.okOpens(selectionMode, okOpens' not in lib:
-        raise SystemExit('ERROR: Missing standard library click/long-click hooks. No files written.')
-    lib = lib.replace(lib_anchor, lib_insertion + lib_anchor, 1)
-    lib = lib.replace(method_anchor, method_replace, 1)
-
-# Short OK opens irrespective of whether the app is already on Home.
-# Selection mode must be false; it intentionally disables the long-press menu upstream.
-for name, value in [('app_library', 'true'),
+# Enable short OK to open, long OK to show native management menu.
+for name, value in (('app_library', 'true'),
                     ('app_library_selection', 'false'),
-                    ('library_ok_opens', 'true')]:
-    rx = re.compile(r'(<bool\s+name="' + name + r'"\s*>)[ \t\r\n]*(true|false)[ \t\r\n]*(</bool>)')
-    if len(rx.findall(config_xml)) != 1:
-        raise SystemExit(f'ERROR: Missing or duplicate config.xml boolean {name}; no files written')
-    config_xml = rx.sub(lambda m: m.group(1)+value+m.group(3), config_xml)
+                    ('library_ok_opens', 'true')):
+    rx = re.compile(r'(<bool\s+name="' + name + r'"\s*>)[\s]*(true|false)[\s]*(</bool>)')
+    if len(rx.findall(conf)) != 1:
+        die('config.xml missing or duplicate: ' + name)
+    conf = rx.sub(lambda m: m.group(1) + value + m.group(3), conf)
 
-# Stage JSON modifications before changing any files, preserving all other keys.
+# V4 always copies its embedded JSON from tools/cm2012_apple on every run;
+# keep both source JSON and generated assets aligned so this setting persists.
 json_writes = {}
-for rel in ('launcher/app/src/main/assets/cm2012_apple_config.json',
-            'tools/cm2012_apple/cm2012_apple_config.json'):
+for rel in ('tools/cm2012_apple/cm2012_apple_config.json',
+            'launcher/app/src/main/assets/cm2012_apple_config.json'):
     p = ROOT / rel
-    if p.exists():
-        cfg = json.loads(p.read_text(encoding='utf-8-sig'))
-        for name, value in [('app_library', True),
-                            ('app_library_selection', False),
-                            ('library_ok_opens', True)]:
-            cfg[name] = value
-        json_writes[p] = json.dumps(cfg, ensure_ascii=False, indent=2) + '\n'
+    if p.is_file():
+        obj = json.loads(p.read_text(encoding='utf-8-sig'))
+        obj.update(app_library=True, app_library_selection=False, library_ok_opens=True)
+        json_writes[p] = json.dumps(obj, ensure_ascii=False, indent=2) + '\n'
+if not json_writes:
+    die('cannot find V4 embedded JSON configuration')
 
-# All structure checks passed; write the build tree once.
+# Screen saver has already been registered by V5; don't rewrite the manifest
+# or change the activity names, to preserve the box's selected DreamService.
+for piece in ('AppleAerialDream', 'AppleAerialSettingsActivity',
+              'android.permission.INTERNET', 'android.permission.ACCESS_NETWORK_STATE'):
+    if piece not in manifest:
+        die('V5 manifest is missing: ' + piece)
+for filename in REPLACEMENTS:
+    src = (HERE / filename).read_text(encoding='utf-8')
+    if 'package com.gathin.tvhome;' not in src:
+        die('unexpected Java package in ' + filename)
+for filename in ('AppleAerialDream.java', 'AppleAerialSettingsActivity.java'):
+    old = (JAVA / filename).read_text(encoding='utf-8')
+    if 'cm2012_apple_aerial' not in old:
+        die('unexpected existing V5 aerial source ' + filename)
+
+# Write only after all checks succeed.
 MAIN.write_text(main, encoding='utf-8')
-LIBRARY.write_text(lib, encoding='utf-8')
-CONFIG_XML.write_text(config_xml, encoding='utf-8')
-DRAWABLE_TO.write_bytes(DRAWABLE_FROM.read_bytes())
-for p, value in json_writes.items():
-    p.write_text(value, encoding='utf-8')
+LIB.write_text(lib, encoding='utf-8')
+CONFIG.write_text(conf, encoding='utf-8')
+for path, value in json_writes.items():
+    path.write_text(value, encoding='utf-8')
+for filename in REPLACEMENTS:
+    shutil.copyfile(HERE / filename, JAVA / filename)
 
-assert 'CM2012_V52_ETHERNET_COLOR' in main
-assert 'CM2012_V52_NO_ICON_TINT' in main
-assert 'CM2012_V52_UNINSTALL_ACTION' in lib
-print('OK: V5.2 combined patch installed in one pass')
-print('OK: Ethernet green(validated)/red(unvalidated), Wi-Fi RSSI 0..4, refresh 10s')
-print('OK: compound drawable tint removed so Ethernet red/green remains visible')
-print('OK: app library short-OK=OPEN, long-OK=ACTION MENU, Add/Remove Home')
-print('OK: Uninstall action (user apps only, Android confirmation required)')
-print('OK: Wi-Fi/network settings click and V5.1 aerial screensaver remain unchanged')
+print('OK V5.2.1: network updater attached to visible V4 header')
+print('OK V5.2.1: Ethernet green/red, Wi-Fi 0..4 signal (every 3 sec)')
+print('OK V5.2.1: library short OK opens; native long OK menu; one V5 uninstall')
+print('OK V5.2.1: online MP4 playlist, skip failures, manage URLs, keep local mode')
+print('NOTE: Home add/remove actions remain upstream-native; verify on device')

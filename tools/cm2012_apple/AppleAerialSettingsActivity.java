@@ -24,6 +24,9 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.List;
+import org.json.JSONArray;
 
 /**
  * CM201-2 Apple V5.1 / Android 9: remote-friendly, explicit source selection.
@@ -34,6 +37,9 @@ public class AppleAerialSettingsActivity extends Activity {
     private static final String PREFS = "cm2012_apple_aerial";
     private static final String VIDEO_URI = "video_uri";
     private static final String SOURCE_MODE = "source_mode";
+    private static final String PLAYLIST = "online_playlist_json";
+    private static final String LAST_INDEX = "online_playlist_last_index";
+    private static final int MAX_VIDEOS = 30;
     private static final int REQUEST_LOCAL = 2105;
     private static final int WHITE = 0xffffffff;
     private static final int MUTED = 0xffd8cede;
@@ -139,6 +145,8 @@ public class AppleAerialSettingsActivity extends Activity {
                 "local".equals(mode), v -> chooseLocal());
         option("在线 MP4" + ("online".equals(mode) ? "    ✓ 已启用" : "    · 输入网址"),
                 "online".equals(mode), v -> showOnlineEditor());
+        option("管理在线视频列表（" + loadPlaylist().size() + " 条）",
+                false, v -> showPlaylistManager());
         option("▶ 预览当前屏保", false, v -> preview());
         option("清除视频设置（需要再次确认）", false, v -> confirmClear());
         option("返回", false, v -> finish());
@@ -202,13 +210,119 @@ public class AppleAerialSettingsActivity extends Activity {
         }
     }
 
-    private void showOnlineEditor() {
+    // V5.2.1: multi-URL video list; legacy single video_uri auto-migrates in memory.
+    private List<String> loadPlaylist() {
+        List<String> list = new ArrayList<>();
+        try {
+            JSONArray a = new JSONArray(prefs().getString(PLAYLIST, "[]"));
+            for (int i = 0; i < a.length(); i++) {
+                String u = a.optString(i, "").trim();
+                if (validOnline(u) && !list.contains(u)) list.add(u);
+            }
+        } catch (Exception ignored) {}
+        String old = savedUri();
+        if ("online".equals(effectiveMode()) && validOnline(old)
+                && !list.contains(old) && list.isEmpty()) list.add(old);
+        return list;
+    }
+
+    private boolean validOnline(String input) {
+        if (input == null || !input.startsWith("https://")) return false;
+        Uri u = Uri.parse(input);
+        return u.getHost() != null && u.getHost().length() > 0;
+    }
+
+    private boolean savePlaylist(List<String> list, boolean enableOnline) {
+        JSONArray a = new JSONArray();
+        for (String u : list) a.put(u);
+        SharedPreferences.Editor editor = prefs().edit()
+                .putString(PLAYLIST, a.toString())
+                .putInt(LAST_INDEX, -1);
+        if (enableOnline) {
+            editor.putString(VIDEO_URI, list.isEmpty() ? "" : list.get(0))
+                    .putString(SOURCE_MODE, list.isEmpty() ? "none" : "online");
+        }
+        boolean ok = editor.commit();
+        Toast.makeText(this, ok ? "在线视频列表已保存（" + list.size() + " 条）"
+                : "视频列表保存失败", Toast.LENGTH_LONG).show();
+        return ok;
+    }
+
+    private void showPlaylistManager() {
+        content.removeAllViews();
+        text("管理在线视频 · 自动轮播", 29, WHITE);
+        text("短按确定键管理单条视频；白色粗边框是焦点。"
+                + " 播放失败会自动跳过；全部失败后稍后重试。", 17, MUTED);
+        List<String> list = loadPlaylist();
+        text("已保存：" + list.size() + " / " + MAX_VIDEOS + " 条", 22, GREEN);
+        TextView first = option("＋ 添加在线 MP4 地址", false, v -> showOnlineEditor(-1));
+        option("▶ 启用在线轮播", "online".equals(effectiveMode()), v -> {
+            if (list.isEmpty()) {
+                Toast.makeText(this, "请先添加至少一条视频", Toast.LENGTH_LONG).show();
+            } else if (savePlaylist(list, true)) render();
+        });
+        for (int i = 0; i < list.size(); i++) {
+            final int index = i;
+            String u = list.get(i);
+            option((i + 1) + ". " + u,
+                    "online".equals(effectiveMode()) && u.equals(savedUri()),
+                    v -> showVideoActions(index));
+        }
+        option("返回屏保设置", false, v -> render());
+        first.post(first::requestFocus);
+    }
+
+    private void showVideoActions(int index) {
+        List<String> list = loadPlaylist();
+        if (index < 0 || index >= list.size()) { showPlaylistManager(); return; }
+        final String[] actions = {"设为首条并启用在线轮播", "修改地址", "上移", "下移", "删除"};
+        new AlertDialog.Builder(this)
+                .setTitle("视频 " + (index + 1))
+                .setItems(actions, (dialog, which) -> {
+                    List<String> next = loadPlaylist();
+                    if (index >= next.size()) return;
+                    if (which == 0) {
+                        String chosen = next.remove(index);
+                        next.add(0, chosen);
+                        if (savePlaylist(next, true)) render();
+                    } else if (which == 1) {
+                        showOnlineEditor(index);
+                    } else if (which == 2 && index > 0) {
+                        java.util.Collections.swap(next, index, index - 1);
+                        if (savePlaylist(next, "online".equals(effectiveMode()))) showPlaylistManager();
+                    } else if (which == 3 && index < next.size() - 1) {
+                        java.util.Collections.swap(next, index, index + 1);
+                        if (savePlaylist(next, "online".equals(effectiveMode()))) showPlaylistManager();
+                    } else if (which == 4) {
+                        new AlertDialog.Builder(this)
+                                .setTitle("确认删除这条视频？")
+                                .setMessage(next.get(index))
+                                .setNegativeButton("取消", null)
+                                .setPositiveButton("删除", (d, w) -> {
+                                    List<String> removal = loadPlaylist();
+                                    if (index < removal.size()) {
+                                        removal.remove(index);
+                                        if (savePlaylist(removal, "online".equals(effectiveMode())))
+                                            showPlaylistManager();
+                                    }
+                                }).show();
+                    } else {
+                        showPlaylistManager();
+                    }
+                })
+                .setNegativeButton("返回", (d, which) -> showPlaylistManager())
+                .show();
+    }
+
+    private void showOnlineEditor() { showOnlineEditor(-1); }
+
+    private void showOnlineEditor(int editIndex) {
         LinearLayout body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
         body.setPadding(dp(24), dp(20), dp(24), dp(20));
         body.setBackgroundColor(0xff2b2037);
         TextView title = new TextView(this);
-        title.setText("在线 MP4 视频直链（HTTPS）");
+        title.setText(editIndex >= 0 ? "修改在线 MP4 地址" : "添加在线 MP4 地址（HTTPS）");
         title.setTextColor(WHITE);
         title.setTextSize(23);
         body.addView(title);
@@ -219,7 +333,9 @@ public class AppleAerialSettingsActivity extends Activity {
         field.setSingleLine(true);
         field.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         field.setHint("https://example.com/aerial.mp4");
-        if ("online".equals(effectiveMode())) field.setText(savedUri());
+        List<String> initialList = loadPlaylist();
+        if (editIndex >= 0 && editIndex < initialList.size())
+            field.setText(initialList.get(editIndex));
         LinearLayout.LayoutParams fieldParams = new LinearLayout.LayoutParams(-1, dp(65));
         fieldParams.topMargin = dp(15);
         body.addView(field, fieldParams);
@@ -252,7 +368,21 @@ public class AppleAerialSettingsActivity extends Activity {
                 Toast.makeText(this, "未保存：请输入有效 HTTPS 网址", Toast.LENGTH_LONG).show();
                 return;
             }
-            if (save(input, "online")) dialog.dismiss();
+            List<String> next = loadPlaylist();
+            if (editIndex >= 0 && editIndex < next.size()) next.set(editIndex, input);
+            else if (!next.contains(input)) {
+                if (next.size() >= MAX_VIDEOS) {
+                    Toast.makeText(this, "最多保存 " + MAX_VIDEOS + " 条视频", Toast.LENGTH_LONG).show();
+                    return;
+                }
+                next.add(input);
+            }
+            List<String> unique = new ArrayList<>();
+            for (String u : next) if (!unique.contains(u)) unique.add(u);
+            if (savePlaylist(unique, true)) {
+                dialog.dismiss();
+                showPlaylistManager();
+            }
         });
         dialog.show();
         if (dialog.getWindow() != null) {
