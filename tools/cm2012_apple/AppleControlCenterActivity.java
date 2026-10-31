@@ -101,14 +101,16 @@ public class AppleControlCenterActivity extends Activity {
             toast("返回首页，长按设置键：桌面设置 / 应用排序 / Dock");
             startHome();
         });
-        item("系统应用管理", "原厂 Android 的应用列表（如固件支持）", () -> openSetting(Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS));
+        item("系统应用管理", "优先打开烽火应用管理；不支持时进入内置应用列表", this::openVendorAppManager);
 
         section("网络与连接");
         item("当前网络", ethernetDetails(), () -> new AlertDialog.Builder(this)
                 .setTitle("网络信息").setMessage(ethernetDetails())
                 .setPositiveButton("确定", null).show());
-        item("Wi-Fi 无线网络", "内置热点扫描、密码输入、连接；无需当贝桌面", this::showWifiPanel);
-        item("烽火原厂网络设置", "进入固件自带设置；若未公开此入口请使用内置 Wi-Fi", this::openVendorSettings);
+        item("Wi-Fi 无线网络", "已在 CM201-2 实测可用：直接打开烽火无线网络设置", () -> openVendorOr("fiberhome.intent.action.WIRELESS", this::showWifiPanel));
+        item("无线网络备用入口", "备用 WIFI 设置入口，失败时使用内置热点管理", () -> openVendorOr("fiberhome.intent.action.WIFI", this::showWifiPanel));
+        item("内置 Wi-Fi 管理", "直接使用 Android 9 WifiManager 扫描、连接、切换", this::showWifiPanel);
+        item("有线 / 综合网络设置", "烽火原厂 Ethernet / Network 设置页", () -> openVendorOr("fiberhome.intent.action.ETHERNET", () -> openVendorOr("fiberhome.intent.action.NETWORK", this::openVendorSettings)));
         item("蓝牙设备", "查看配对设备及遥控器", () -> openSetting(Settings.ACTION_BLUETOOTH_SETTINGS));
 
         section("天气与屏保");
@@ -120,15 +122,16 @@ public class AppleControlCenterActivity extends Activity {
         item("音量 +", "提高机顶盒媒体音量", () -> adjustVolume(true));
         item("音量 −", "降低机顶盒媒体音量", () -> adjustVolume(false));
         item("音频设置", "音频输出与系统声音选项", () -> openSetting(Settings.ACTION_SOUND_SETTINGS));
-        item("显示设置", "画面与显示参数（HDMI 亮度未必可以调节）", () -> openSetting(Settings.ACTION_DISPLAY_SETTINGS));
+        item("显示设置", "烽火 DISPLAY 页面；HDMI 背光通常不可由盒子调节", () -> openVendorOr("fiberhome.intent.action.DISPLAY", () -> openSetting(Settings.ACTION_DISPLAY_SETTINGS)));
+        item("分辨率与 HDMI 输出", "烽火 RESOLUTION 页面，修改之前确认电视支持", () -> openVendorOr("fiberhome.intent.action.RESOLUTION", () -> toast("本固件没有可用的分辨率设置页")));
 
         section("系统与高级设置");
-        item("设备存储", "剩余容量及缓存", () -> openSetting(Settings.ACTION_INTERNAL_STORAGE_SETTINGS));
+        item("设备存储", "烽火 SPACEMANAGER 页面", () -> openVendorOr("fiberhome.intent.action.SPACEMANAGER", () -> openSetting(Settings.ACTION_INTERNAL_STORAGE_SETTINGS)));
         item("输入法与语言", "检查输入法、语言和中文输入", () -> openSetting(Settings.ACTION_INPUT_METHOD_SETTINGS));
         item("权限与无障碍", "系统无障碍设置", () -> openSetting(Settings.ACTION_ACCESSIBILITY_SETTINGS));
         item("安全与隐私", "设备安全、应用权限入口", () -> openSetting(Settings.ACTION_SECURITY_SETTINGS));
-        item("开发者选项", "显示系统开发者设置；部分固件可能隐藏", () -> openSetting(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS));
-        item("关于本机", "Android 版本、设备信息", () -> openSetting(Settings.ACTION_DEVICE_INFO_SETTINGS));
+        item("开发者选项", "烽火 ADVANCED 页面，或标准开发者选项", () -> openVendorOr("fiberhome.intent.action.ADVANCED", () -> openSetting(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)));
+        item("关于本机", "烽火 INFORMATION 页面或 Android 设备信息", () -> openVendorOr("fiberhome.intent.action.INFORMATION", () -> openSetting(Settings.ACTION_DEVICE_INFO_SETTINGS)));
         item("原厂系统设置", "打开 Android 原生设置或原厂设置", () -> openSetting(Settings.ACTION_SETTINGS));
 
         if (initialFocus != null) initialFocus.requestFocus();
@@ -197,6 +200,33 @@ public class AppleControlCenterActivity extends Activity {
     }
 
 
+    /**
+     * These actions are registered by the CM201-2's actual FiberHomeSettings APK
+     * (package dump supplied by the device owner); do not invent activity names.
+     */
+    private void openVendorOr(String action, Runnable fallback) {
+        if (!startFiberhome(action)) fallback.run();
+    }
+
+    private boolean startFiberhome(String action) {
+        try {
+            Intent i = new Intent(action);
+            i.setClassName("com.fiberhome.settings", "com.fiberhome.settings.MainActivity");
+            startActivity(i);
+            return true;
+        } catch (Exception ex) {
+            android.util.Log.w("CM2012Control", "FiberHome " + action + " unavailable", ex);
+            return false;
+        }
+    }
+
+    private void openVendorAppManager() {
+        // The vendor app-manager fragment is internal, not a registered exported Activity.
+        // Open the settings landing page first; if it isn't reachable, show native list.
+        if (!openVendorSettingsInternal()) showInstalledApps();
+        else toast("已打开烽火设置；若没有应用管理入口，可返回控制中心使用「全部应用」管理和卸载");
+    }
+
     // Some FiberHome ROMs do not export standard android.settings.* activities.
     // First try their public launcher, without guessing private activity names.
     private void openVendorSettings() {
@@ -206,14 +236,17 @@ public class AppleControlCenterActivity extends Activity {
     }
 
     private boolean openVendorSettingsInternal() {
-        String[] pkgs = {"com.fiberhome.settings", "com.fiberhome.fhstbconfig"};
-        for (String pkg : pkgs) {
+        // Installed FiberHome APK declares android.settings.SETTINGS / FHSETTINGS
+        // on AuthActivity; getLaunchIntentForPackage() alone may be null.
+        try {
+            Intent intent = new Intent("fiberhome.intent.action.FHSETTINGS");
+            intent.setClassName("com.fiberhome.settings", "com.fiberhome.settings.AuthActivity");
+            startActivity(intent);
+            return true;
+        } catch (Exception ex) {
             try {
-                Intent launch = getPackageManager().getLaunchIntentForPackage(pkg);
-                if (launch != null) {
-                    startActivity(launch);
-                    return true;
-                }
+                Intent launch = getPackageManager().getLaunchIntentForPackage("com.fiberhome.settings");
+                if (launch != null) { startActivity(launch); return true; }
             } catch (Exception ignored) { }
         }
         return false;
@@ -489,29 +522,65 @@ public class AppleControlCenterActivity extends Activity {
         String pkg = app.packageName;
         boolean system = (app.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
         String[] options = system
-                ? new String[]{"打开应用", "应用详情 / 启用与停用", "返回应用列表"}
-                : new String[]{"打开应用", "应用详情", "卸载应用（系统确认）", "返回应用列表"};
+                ? new String[]{"打开应用", "应用信息", "返回应用列表"}
+                : new String[]{"打开应用", "应用信息", "卸载应用（需要系统确认）", "返回应用列表"};
         new AlertDialog.Builder(this).setTitle(pkg).setItems(options, (dlg, which) -> {
             if (which == 0) {
                 Intent launch = getPackageManager().getLaunchIntentForPackage(pkg);
-                if (launch == null) { toast("该应用没有可直接启动的界面"); return; }
-                try { startActivity(launch); } catch (Exception e) { toast("无法启动此应用"); }
+                if (launch == null) { toast("此应用没有公开的启动页面"); return; }
+                try { startActivity(launch); } catch (Exception e) { toast("打开应用失败：" + e.getClass().getSimpleName()); }
             } else if (which == 1) {
-                Intent details = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                        Uri.parse("package:" + pkg));
-                try { startActivity(details); } catch (Exception e) { openSetting(Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS); }
+                openApplicationDetails(pkg);
             } else if (which == 2 && !system) {
                 if (pkg.equals(getPackageName())) {
-                    toast("请先切换默认桌面，再考虑卸载当前桌面");
+                    toast("不能从正在使用的桌面卸载自身，请先切换默认桌面");
                     return;
                 }
-                new AlertDialog.Builder(this).setTitle("确认请求卸载？")
-                        .setMessage("卸载 " + pkg + " 可能删除其数据。系统仍会再要求确认。")
-                        .setPositiveButton("继续", (x, y) -> {
-                            try { startActivity(new Intent(Intent.ACTION_DELETE, Uri.parse("package:" + pkg))); }
-                            catch (Exception e) { toast("此固件不支持直接卸载，请在应用详情中操作"); }
-                        }).setNegativeButton("取消", null).show();
+                new AlertDialog.Builder(this).setTitle("卸载第三方应用")
+                        .setMessage("准备卸载 " + pkg + "\n此操作可能同时删除应用数据。下一步由 Android 系统再次确认。")
+                        .setPositiveButton("进入系统卸载页面", (x, y) -> requestSafeUninstall(pkg))
+                        .setNegativeButton("取消", null).show();
             } else showInstalledApps();
         }).setNegativeButton("关闭", null).show();
     }
+
+    private void openApplicationDetails(String pkg) {
+        Intent details = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.parse("package:" + pkg));
+        try { startActivity(details); }
+        catch (Exception e) {
+            toast("原厂未公开标准应用信息页面；改用内置应用列表");
+            showInstalledApps();
+        }
+    }
+
+    private void requestSafeUninstall(String pkg) {
+        Uri data = Uri.parse("package:" + pkg);
+        // Explicit activity discovered from the actual Android 9 PackageInstaller APK.
+        // Always uses the SYSTEM CONFIRMATION UI. No privileged silent removal.
+        try {
+            Intent uninstaller = new Intent(Intent.ACTION_DELETE, data);
+            uninstaller.setClassName("com.android.packageinstaller",
+                    "com.android.packageinstaller.UninstallerActivity");
+            startActivity(uninstaller);
+            return;
+        } catch (Exception first) {
+            android.util.Log.w("CM2012Control", "Explicit uninstaller failed", first);
+        }
+        for (String action : new String[]{Intent.ACTION_UNINSTALL_PACKAGE, Intent.ACTION_DELETE}) {
+            try {
+                Intent i = new Intent(action, data);
+                i.addCategory(Intent.CATEGORY_DEFAULT);
+                startActivity(i);
+                return;
+            } catch (Exception ex) {
+                android.util.Log.w("CM2012Control", "Uninstaller action failed " + action, ex);
+            }
+        }
+        new AlertDialog.Builder(this).setTitle("卸载页面未能启动")
+                .setMessage("已尝试当前固件的 PackageInstaller 和标准卸载指令。\n" +
+                        "请检查软件包权限和系统日志，勿使用静默卸载系统组件。")
+                .setPositiveButton("知道了", null).show();
+    }
+
 }

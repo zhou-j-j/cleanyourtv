@@ -47,6 +47,7 @@ for permission in [
     "android.permission.CHANGE_WIFI_STATE",
     "android.permission.ACCESS_FINE_LOCATION",
     "android.permission.ACCESS_NETWORK_STATE",
+    "android.permission.REQUEST_DELETE_PACKAGES",
 ]:
     if permission not in manifest_src:
         pos = manifest_src.find("<application")
