@@ -33,7 +33,7 @@ public final class AppleWeatherHomeChip {
         chip.setOnClickListener(v->a.startActivity(new Intent(a,AppleWeatherActivity.class)));
         chip.setOnFocusChangeListener((v,focused)->{chip.setAlpha(focused?1f:.88f);chip.setScaleX(focused?1.04f:1f);});
         update(a,chip);
-        chip.setOnAttachStateChangeListener(new View.OnAttachStateChangeListener(){
+        chip.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener(){
             @Override public void onViewAttachedToWindow(View v){update(a,chip);}
             @Override public void onViewDetachedFromWindow(View v){}
         });
