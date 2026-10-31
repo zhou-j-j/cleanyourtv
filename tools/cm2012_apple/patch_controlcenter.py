@@ -42,6 +42,17 @@ if "AppleControlCenterActivity" not in manifest_src:
             android:theme="@android:style/Theme.Material.NoActionBar" />
 """
     manifest_src = manifest_src.replace("</application>", entry + "    </application>", 1)
+for permission in [
+    "android.permission.ACCESS_WIFI_STATE",
+    "android.permission.CHANGE_WIFI_STATE",
+    "android.permission.ACCESS_FINE_LOCATION",
+    "android.permission.ACCESS_NETWORK_STATE",
+]:
+    if permission not in manifest_src:
+        pos = manifest_src.find("<application")
+        if pos == -1: sys.exit("ERROR: manifest has no <application tag")
+        manifest_src = manifest_src[:pos] + '<uses-permission android:name="' + permission + '" />\n    ' + manifest_src[pos:]
+
 if 'android.permission.MODIFY_AUDIO_SETTINGS' not in manifest_src:
     pos = manifest_src.find("<application")
     if pos == -1: sys.exit("ERROR: manifest has no <application tag")

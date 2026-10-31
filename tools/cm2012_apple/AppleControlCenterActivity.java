@@ -1,6 +1,21 @@
 package com.gathin.tvhome;
 
+import android.Manifest;
 import android.app.Activity;
+import android.content.Context;
+import android.content.pm.PackageManager;
+import android.net.wifi.WifiManager;
+import android.net.wifi.WifiConfiguration;
+import android.net.wifi.ScanResult;
+import android.os.Build;
+import android.text.InputType;
+import android.widget.EditText;
+import android.widget.Button;
+import android.widget.FrameLayout;
+import android.widget.ScrollView;
+import android.graphics.drawable.Drawable;
+import android.content.DialogInterface;
+import java.util.HashSet;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
@@ -92,8 +107,8 @@ public class AppleControlCenterActivity extends Activity {
         item("当前网络", ethernetDetails(), () -> new AlertDialog.Builder(this)
                 .setTitle("网络信息").setMessage(ethernetDetails())
                 .setPositiveButton("确定", null).show());
-        item("Wi-Fi 无线网络", "查看热点、连接无线网络；失败时尝试原厂网络设置", () -> openSetting(Settings.ACTION_WIFI_SETTINGS));
-        item("无线与移动网络", "系统网络详细设置", () -> openSetting(Settings.ACTION_WIRELESS_SETTINGS));
+        item("Wi-Fi 无线网络", "内置热点扫描、密码输入、连接；无需当贝桌面", this::showWifiPanel);
+        item("烽火原厂网络设置", "进入固件自带设置；若未公开此入口请使用内置 Wi-Fi", this::openVendorSettings);
         item("蓝牙设备", "查看配对设备及遥控器", () -> openSetting(Settings.ACTION_BLUETOOTH_SETTINGS));
 
         section("天气与屏保");
@@ -175,11 +190,225 @@ public class AppleControlCenterActivity extends Activity {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         try { startActivity(intent); }
         catch (Exception ex) {
-            if (!Settings.ACTION_SETTINGS.equals(action)) {
-                toast("本固件未提供这个设置页面，尝试打开系统设置");
-                try { startActivity(new Intent(Settings.ACTION_SETTINGS)); }
-                catch (Exception e) { toast("原厂固件未开放相应设置入口"); }
-            } else toast("原厂固件未开放系统设置入口");
+            if (!openVendorSettingsInternal()) {
+                toast("此标准设置页不存在，固件未开放对应入口");
+            }
+        }
+    }
+
+
+    // Some FiberHome ROMs do not export standard android.settings.* activities.
+    // First try their public launcher, without guessing private activity names.
+    private void openVendorSettings() {
+        if (!openVendorSettingsInternal()) {
+            toast("烽火设置未提供外部启动入口，可继续使用本控制中心内置功能");
+        }
+    }
+
+    private boolean openVendorSettingsInternal() {
+        String[] pkgs = {"com.fiberhome.settings", "com.fiberhome.fhstbconfig"};
+        for (String pkg : pkgs) {
+            try {
+                Intent launch = getPackageManager().getLaunchIntentForPackage(pkg);
+                if (launch != null) {
+                    startActivity(launch);
+                    return true;
+                }
+            } catch (Exception ignored) { }
+        }
+        return false;
+    }
+
+    private WifiManager wifiManager;
+    private static final int WIFI_LOCATION_REQUEST = 2318;
+
+    private void showWifiPanel() {
+        wifiManager = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+        if (wifiManager == null) {
+            new AlertDialog.Builder(this).setTitle("无线网络不可用")
+                    .setMessage("系统未提供 Wi-Fi 服务。此功能无法由桌面自行创建。")
+                    .setPositiveButton("知道了", null).show();
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 23 && checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, WIFI_LOCATION_REQUEST);
+            return;
+        }
+
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(d(12), d(6), d(12), d(6));
+        TextView status = new TextView(this);
+        status.setTextSize(15);
+        status.setTextColor(Color.WHITE);
+        status.setPadding(d(6), d(6), d(6), d(12));
+        panel.addView(status);
+        LinearLayout rows = new LinearLayout(this);
+        rows.setOrientation(LinearLayout.VERTICAL);
+        panel.addView(rows);
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(false);
+        scroll.addView(panel);
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("无线网络 · Apple TV")
+                .setView(scroll)
+                .setPositiveButton("刷新热点", null)
+                .setNeutralButton("Wi-Fi 开关", null)
+                .setNegativeButton("关闭", null)
+                .create();
+        dialog.setOnShowListener(ignored -> {
+            dialog.getButton(DialogInterface.BUTTON_POSITIVE).setOnClickListener(v ->
+                    refreshWifiList(status, rows, true));
+            dialog.getButton(DialogInterface.BUTTON_NEUTRAL).setOnClickListener(v -> {
+                try {
+                    boolean result = wifiManager.setWifiEnabled(!wifiManager.isWifiEnabled());
+                    if (!result) toast("此固件禁止桌面操作 Wi-Fi 开关，请使用原厂设置");
+                    refreshWifiList(status, rows, false);
+                } catch (Exception e) { toast("切换 Wi-Fi 失败：" + e.getClass().getSimpleName()); }
+            });
+            refreshWifiList(status, rows, true);
+        });
+        dialog.show();
+        // Fixed dimensions prevent the hotspot list from covering the TV screen.
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setLayout(d(720), d(550));
+        }
+    }
+
+    private void refreshWifiList(TextView status, LinearLayout rows, boolean forceScan) {
+        rows.removeAllViews();
+        boolean enabled = false;
+        try { enabled = wifiManager.isWifiEnabled(); } catch (Exception ignored) { }
+        if (!enabled) {
+            status.setText("Wi-Fi 目前关闭。按下方「Wi-Fi 开关」开启；有线网络仍保持连接。");
+            return;
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= 19 && Settings.Secure.getInt(
+                    getContentResolver(), Settings.Secure.LOCATION_MODE, 0) == 0) {
+                status.setText("Android 9 扫描热点需要系统定位服务开启。固件如隐藏定位设置，" +
+                        "可通过 ADB 开启后再刷新。本页面不会擅自修改定位设置。");
+                return;
+            }
+        } catch (Exception ignored) { }
+        try {
+            boolean scanRequested = !forceScan || wifiManager.startScan();
+            List<ScanResult> found = wifiManager.getScanResults();
+            if (found == null) found = new ArrayList<>();
+            Collections.sort(found, (a,b) -> Integer.compare(b.level, a.level));
+            HashSet<String> seen = new HashSet<>();
+            int total = 0;
+            for (ScanResult sr : found) {
+                if (sr.SSID == null || sr.SSID.trim().isEmpty() || !seen.add(sr.SSID)) continue;
+                total++;
+                final ScanResult network = sr;
+                final String security = sr.capabilities.contains("EAP") ? "企业网络" :
+                        sr.capabilities.contains("WEP") ? "WEP" :
+                        sr.capabilities.contains("PSK") || sr.capabilities.contains("SAE") ? "需要密码" : "开放网络";
+                TextView tile = new TextView(this);
+                tile.setText(sr.SSID + "    " + strengthName(sr.level) + "  ·  " + security);
+                tile.setTextColor(Color.WHITE);
+                tile.setTextSize(18);
+                tile.setPadding(d(18), d(13), d(16), d(13));
+                tile.setFocusable(true);
+                tile.setClickable(true);
+                tile.setBackground(bg(0xFF233652, 0xFF3B5276, 12));
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+                lp.bottomMargin = d(6);
+                rows.addView(tile, lp);
+                tile.setOnClickListener(v -> confirmWifiConnection(network));
+                tile.setOnFocusChangeListener((v, focused) ->
+                        tile.setBackground(bg(focused ? 0xFF326BB0 : 0xFF233652,
+                                focused ? 0xFFB3E6FF : 0xFF3B5276, 12)));
+            }
+            status.setText("已发现 " + total + " 个热点" +
+                    (scanRequested ? "（可选中连接）" : "（刷新受限，显示缓存结果）") +
+                    "。如果列表为空，可过几秒刷新；扫描限频属于 Android 9 正常行为。");
+        } catch (SecurityException e) {
+            status.setText("没有获得热点扫描权限。请确认已允许此应用使用定位权限，且系统定位已开启。");
+        } catch (Exception e) {
+            status.setText("读取热点失败：" + e.getClass().getSimpleName() + "。可尝试烽火原厂设置。");
+        }
+    }
+
+    private String strengthName(int level) {
+        if (level > -55) return "信号极好";
+        if (level > -67) return "信号较好";
+        if (level > -80) return "信号一般";
+        return "信号较弱";
+    }
+
+    private void confirmWifiConnection(ScanResult sr) {
+        if (sr.capabilities.contains("EAP") || sr.capabilities.contains("WEP")) {
+            new AlertDialog.Builder(this).setTitle(sr.SSID)
+                    .setMessage("该网络使用企业认证或旧式 WEP。请从厂商网络设置中配置认证方式。")
+                    .setPositiveButton("确定", null).show();
+            return;
+        }
+        boolean protectedNetwork = sr.capabilities.contains("PSK") || sr.capabilities.contains("SAE");
+        if (sr.capabilities.contains("SAE") && !sr.capabilities.contains("PSK")) {
+            toast("此网络仅支持 WPA3，Android 9 盒子可能无法连接");
+            return;
+        }
+        if (!protectedNetwork) {
+            new AlertDialog.Builder(this).setTitle("连接 " + sr.SSID + "？")
+                    .setMessage("此热点没有密码保护。")
+                    .setPositiveButton("连接", (d, w) -> connectWifi(sr.SSID, null))
+                    .setNegativeButton("取消", null).show();
+            return;
+        }
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setHint("输入 Wi-Fi 密码");
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        FrameLayout frame = new FrameLayout(this);
+        frame.setPadding(d(25), d(5), d(25), d(8));
+        frame.addView(input);
+        new AlertDialog.Builder(this).setTitle("连接 " + sr.SSID)
+                .setView(frame)
+                .setPositiveButton("连接", (d, w) -> {
+                    String pass = input.getText().toString();
+                    if (pass.length() < 8 || pass.length() > 63) {
+                        toast("WPA2 密码通常为 8–63 个字符，请检查密码后重新选择热点");
+                    } else connectWifi(sr.SSID, pass);
+                }).setNegativeButton("取消", null).show();
+    }
+
+    @SuppressWarnings("deprecation")
+    private void connectWifi(String ssid, String password) {
+        try {
+            WifiConfiguration conf = new WifiConfiguration();
+            conf.SSID = "\"" + ssid.replace("\"", "\\\"") + "\"";
+            if (password == null) {
+                conf.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.NONE);
+            } else {
+                conf.preSharedKey = "\"" + password.replace("\"", "\\\"") + "\"";
+            }
+            int id = wifiManager.addNetwork(conf);
+            if (id < 0) {
+                List<WifiConfiguration> saved = wifiManager.getConfiguredNetworks();
+                if (saved != null) {
+                    for (WifiConfiguration item : saved) {
+                        if (conf.SSID.equals(item.SSID)) { id = item.networkId; break; }
+                    }
+                }
+            }
+            if (id < 0 || !wifiManager.enableNetwork(id, true)) {
+                toast("系统拒绝保存/连接此热点。可能需要使用原厂网络设置。");
+                return;
+            }
+            wifiManager.reconnect();
+            toast("已向系统提交连接请求，请稍后检查 Wi-Fi 状态；有线网络不受影响");
+        } catch (Exception e) { toast("连接失败：" + e.getClass().getSimpleName()); }
+    }
+
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == WIFI_LOCATION_REQUEST) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED)
+                showWifiPanel();
+            else toast("需要定位权限才能在 Android 9 上扫描附近 Wi-Fi。请在应用权限中允许。");
         }
     }
 
