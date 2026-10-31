@@ -1,0 +1,6 @@
+cm2012_apple_01_blue.jpg	深海蓝
+cm2012_apple_02_purple.jpg	梦幻紫
+cm2012_apple_03_gold.jpg	流光金
+cm2012_apple_04_teal.jpg	青蓝海
+cm2012_apple_05_black.jpg	极夜黑
+cm2012_apple_06_emerald.jpg	翡翠绿
