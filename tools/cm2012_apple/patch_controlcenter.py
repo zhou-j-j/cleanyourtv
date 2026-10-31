@@ -30,6 +30,22 @@ if "new Intent(this, AppleControlCenterActivity.class)" not in main:
 else:
     print("MainActivity already patched")
 
+# CM201-2 Firehome ROM: the upstream Ethernet/Wi-Fi pill does not open
+# a usable system settings page. Keep its status visible, but have a short
+# press open the verified integrated Control Center (which shows eth0/IP
+# and whose Wireless item reaches the verified vendor WIRELESS activity).
+network_old = "btnWifi.setOnClickListener(v -> openNetworkPill());"
+network_new = "btnWifi.setOnClickListener(v -> startActivity(new Intent(this, AppleControlCenterActivity.class)));"
+main = source.read_text(encoding="utf-8")
+if network_old in main:
+    main = main.replace(network_old, network_new, 1)
+    source.write_text(main, encoding="utf-8")
+    print("Patched top-right Ethernet network pill -> integrated Control Center")
+elif network_new in main:
+    print("Network pill is already patched")
+else:
+    sys.exit("ERROR: upstream network pill hook changed; refusing a blind edit")
+
 dest = source.parent / activity.name
 shutil.copyfile(activity, dest)
 manifest_src = manifest.read_text(encoding="utf-8")
@@ -60,3 +76,51 @@ if 'android.permission.MODIFY_AUDIO_SETTINGS' not in manifest_src:
     manifest_src = manifest_src[:pos] + '<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    ' + manifest_src[pos:]
 manifest.write_text(manifest_src, encoding="utf-8")
 print("Integrated control center registered in manifest")
+
+# V4: install the original Apple-inspired wallpaper/config from inside the APK,
+# turn on upstream's real built-in App Library, and replace the header with
+# three TV-remote friendly buttons + a real quick-links dropdown.
+import re
+main = source.read_text(encoding="utf-8")
+if "AppleTheme.ensureInstalled(this);" not in main:
+    marker = "Config cfg = Config.load(this);"
+    if main.count(marker) != 1:
+        sys.exit("ERROR: Cannot locate the unique Config.load() hook for embedded V4 theme")
+    main = main.replace(marker, "AppleTheme.ensureInstalled(this);\n        " + marker, 1)
+
+if "void openAppleAppLibrary()" not in main:
+    # The official App Library is built-in; invoke it instead of duplicating its state.
+    pat_create = r"@Override\s+protected void onCreate\(Bundle savedInstanceState\) \{"
+    match = re.search(pat_create, main)
+    if not match:
+        sys.exit("ERROR: Cannot locate onCreate() to expose App Library")
+    replacement = ("public void openAppleAppLibrary() { onLibraryRequested(); }\n\n    "
+                   "@Override\n    protected void onCreate(Bundle savedInstanceState) {")
+    main = main[:match.start()] + replacement + main[match.end():]
+
+if "AppleTopMenu.attach(this" not in main:
+    pat = r'btnSettings\.setOnLongClickListener\(v -> \{\s*showSettingsMenu\(\);\s*return true;\s*\}\);'
+    mat = re.search(pat, main)
+    if not mat:
+        sys.exit("ERROR: Cannot locate settings long-press handler for the 3-button header")
+    # Keep upstream long-OK handler alive; the new three buttons render on top of it.
+    code = ("\n        AppleTopMenu.attach(this,\n"
+            "                (android.widget.LinearLayout) findViewById(R.id.topButtons),\n"
+            "                btnInputs, btnWifi, btnSettings);\n")
+    main = main[:mat.end()] + code + main[mat.end():]
+source.write_text(main, encoding="utf-8")
+
+for filename in ("AppleTopMenu.java", "AppleTheme.java"):
+    f = patch_dir / filename
+    if not f.is_file():
+        sys.exit("ERROR: required V4 source missing: " + filename)
+    shutil.copyfile(f, source.parent / filename)
+
+assets = root / "launcher/app/src/main/assets"
+assets.mkdir(parents=True, exist_ok=True)
+for filename in ("cm2012_apple_config.json", "cm2012_apple_wallpaper.jpg"):
+    f = patch_dir / filename
+    if not f.is_file():
+        sys.exit("ERROR: required V4 asset missing: " + filename)
+    shutil.copyfile(f, assets / filename)
+print("CM2012 V4: glass header + Inputs popup + real App Library + embedded dark-red theme ready")
