@@ -58,7 +58,7 @@ NETWORK = '''            // CM2012_V52_ETHERNET_COLOR: active route, Wi-Fi RSSI,
                     android.net.wifi.WifiManager wm =
                             (android.net.wifi.WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
                     android.net.wifi.WifiInfo wi = wm == null ? null : wm.getConnectionInfo();
-                    if (wi != null && wi.getRssi() != android.net.wifi.WifiInfo.INVALID_RSSI) {
+                    if (wi != null && wi.getRssi() > -127 && wi.getRssi() < 0) {
                         cmLevel = android.net.wifi.WifiManager.calculateSignalLevel(wi.getRssi(), 5);
                     }
                 } else if ((active != null && active.getType() == android.net.ConnectivityManager.TYPE_ETHERNET)
