@@ -31,6 +31,8 @@ jobs:
         run: python3 tools/cm2012_apple/patch_v52_all_in_one.py
       - name: Integrate V5.3 Wallpaper and Bluetooth
         run: python3 tools/cm2012_apple/patch_v53_wallpaper_bluetooth.py
+      - name: V5.4 Pills and Phone QR MP4 Input
+        run: python3 tools/cm2012_apple/patch_v54_pills_qr.py        
       - name: Compile one APK
         working-directory: launcher
         run: |
