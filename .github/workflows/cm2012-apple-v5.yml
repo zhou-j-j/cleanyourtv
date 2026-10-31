@@ -29,6 +29,8 @@ jobs:
         run: python3 tools/cm2012_apple/patch_v5_features.py
       - name: Integrate V5.2.1 Network + App Library + Online Aerial Playlist
         run: python3 tools/cm2012_apple/patch_v52_all_in_one.py
+      - name: Integrate V5.3 Wallpaper and Bluetooth
+        run: python3 tools/cm2012_apple/patch_v53_wallpaper_bluetooth.py
       - name: Compile one APK
         working-directory: launcher
         run: |
