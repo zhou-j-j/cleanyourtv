@@ -78,6 +78,64 @@ if lib.count('addAction(rows, R.string.cm2012_uninstall') != 1:
 if 'LibraryApps.okOpens(selectionMode, okOpens' not in lib:
     die('AppLibraryDialog short-OK/long-OK hooks differ from expected upstream')
 
+# Add an *in-app* App Details dialog, distinct from the upstream Android
+# App Info action. Leave the existing home membership and uninstall actions
+# untouched. This runs AFTER patch_v5_features.py's menu insertion.
+DETAIL_MARK = 'CM2012_V522_APP_DETAILS'
+MENU_ANCHOR = '        int menuWidth = dp(220);'
+if DETAIL_MARK not in lib:
+    if lib.count(MENU_ANCHOR) != 1:
+        die('cannot find unique AppLibraryDialog menuWidth anchor')
+    details_action = '''        // CM2012_V522_APP_DETAILS: a read-only panel; no app data changes.
+        addAction(rows, R.string.cm2012_app_details, () -> {
+            dismissActions();
+            String version = "未知";
+            String versionCode = "未知";
+            try {
+                android.content.pm.PackageInfo pi = activity.getPackageManager().getPackageInfo(pkg, 0);
+                if (pi != null) {
+                    if (pi.versionName != null && !pi.versionName.isEmpty()) version = pi.versionName;
+                    long code = android.os.Build.VERSION.SDK_INT >= 28
+                            ? pi.getLongVersionCode() : pi.versionCode;
+                    versionCode = String.valueOf(code);
+                }
+            } catch (Exception ignored) { }
+            android.content.pm.ApplicationInfo detailAppInfo = app.activityInfo.applicationInfo;
+            boolean system = detailAppInfo != null && (detailAppInfo.flags
+                    & (android.content.pm.ApplicationInfo.FLAG_SYSTEM
+                    | android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP)) != 0;
+            String content = "应用名称：" + label(app)
+                    + "\\n包名：" + pkg
+                    + "\\n版本：" + version
+                    + "\\n版本号：" + versionCode
+                    + "\\n类型：" + (system ? "系统应用" : "用户应用");
+            new android.app.AlertDialog.Builder(activity)
+                    .setTitle("应用详情")
+                    .setMessage(content)
+                    .setNegativeButton("关闭", null)
+                    .setPositiveButton("打开系统应用信息", (dialog, which) -> {
+                        try { activity.startActivity(SystemSettings.appInfo(activity, pkg)); }
+                        catch (Exception e) {
+                            android.widget.Toast.makeText(activity,
+                                    "无法打开系统应用信息", android.widget.Toast.LENGTH_LONG).show();
+                        }
+                    })
+                    .show();
+        });
+'''
+    lib = lib.replace(MENU_ANCHOR, details_action + MENU_ANCHOR, 1)
+
+# Add one resource label for the new App Details action.
+if 'name="cm2012_app_details"' not in (ROOT / 'launcher/app/src/main/res/values/strings.xml').read_text(encoding='utf-8'):
+    strings_file = ROOT / 'launcher/app/src/main/res/values/strings.xml'
+    strings_xml = strings_file.read_text(encoding='utf-8')
+    if strings_xml.count('</resources>') != 1:
+        die('cannot add app-details string: unexpected strings.xml')
+    details_strings = strings_xml.replace('</resources>',
+            '    <string name="cm2012_app_details">应用详情</string>\n</resources>', 1)
+else:
+    details_strings = None
+
 # Enable short OK to open, long OK to show native management menu.
 for name, value in (('app_library', 'true'),
                     ('app_library_selection', 'false'),
@@ -116,6 +174,8 @@ for filename in ('AppleAerialDream.java', 'AppleAerialSettingsActivity.java'):
         die('unexpected existing V5 aerial source ' + filename)
 
 # Write only after all checks succeed.
+if details_strings is not None:
+    strings_file.write_text(details_strings, encoding='utf-8')
 MAIN.write_text(main, encoding='utf-8')
 LIB.write_text(lib, encoding='utf-8')
 CONFIG.write_text(conf, encoding='utf-8')
@@ -124,8 +184,8 @@ for path, value in json_writes.items():
 for filename in REPLACEMENTS:
     shutil.copyfile(HERE / filename, JAVA / filename)
 
-print('OK V5.2.1: network updater attached to visible V4 header')
+print('OK V5.2.2: network status updates existing buttons only (no extra right-side badge)')
 print('OK V5.2.1: Ethernet green/red, Wi-Fi 0..4 signal (every 3 sec)')
-print('OK V5.2.1: library short OK opens; native long OK menu; one V5 uninstall')
-print('OK V5.2.1: online MP4 playlist, skip failures, manage URLs, keep local mode')
+print('OK V5.2.2: library app-details dialog added; short OK opens; one uninstall')
+print('OK V5.2.2: retains online MP4 playlist and local mode')
 print('NOTE: Home add/remove actions remain upstream-native; verify on device')

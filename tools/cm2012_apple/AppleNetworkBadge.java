@@ -17,9 +17,9 @@ import android.view.ViewGroup;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-/** V5.2.1: keeps the top-right network status visible in the V4 custom header.
- * Does not modify the original button's click handler, unless a fallback badge
- * must be created because no visible network button exists in the header.
+/** V5.2.1: updates an existing top-row network button when visible.
+ * Never appends a fallback network badge to the right of Settings.
+ * Does not modify the existing network button click handler.
  */
 public final class AppleNetworkBadge {
     private AppleNetworkBadge() {}
@@ -35,7 +35,6 @@ public final class AppleNetworkBadge {
         private final LinearLayout header;
         private final TextView original;
         private final Handler handler = new Handler(Looper.getMainLooper());
-        private TextView fallback;
         private TextView lastTarget;
         private int lastMode = -1;
         private int lastLevel = -1;
@@ -63,7 +62,8 @@ public final class AppleNetworkBadge {
             try {
                 TextView target = findVisibleNetworkButton(header);
                 if (target == null && original.isShown()) target = original;
-                if (target == null) target = ensureFallback();
+                // Do not create a fourth header control to the right of Settings.
+                // If the original network button is hidden, leave the row unchanged.
 
                 int mode = NetworkStatusDrawable.DISCONNECTED;
                 int level = 0;
@@ -124,7 +124,7 @@ public final class AppleNetworkBadge {
         }
 
         private TextView findVisibleNetworkButton(View v) {
-            if (v instanceof TextView && v != fallback) {
+            if (v instanceof TextView) {
                 TextView t = (TextView) v;
                 String label = t.getText() == null ? "" : t.getText().toString();
                 String desc = t.getContentDescription() == null ? "" : t.getContentDescription().toString();
@@ -144,24 +144,6 @@ public final class AppleNetworkBadge {
             String l = s.toLowerCase(java.util.Locale.ROOT);
             return l.contains("网络") || l.contains("wi-fi") || l.contains("wifi")
                     || l.contains("ethernet") || l.contains("有线") || l.contains("无线");
-        }
-        private TextView ensureFallback() {
-            if (fallback != null) return fallback;
-            TextView t = new TextView(activity);
-            t.setText("网络");
-            t.setTextColor(android.graphics.Color.WHITE);
-            t.setTextSize(13f);
-            int pad = (int) (10 * activity.getResources().getDisplayMetrics().density);
-            t.setPadding(pad, pad, pad, pad);
-            t.setGravity(Gravity.CENTER);
-            t.setFocusable(true);
-            t.setClickable(true);
-            t.setOnClickListener(v -> original.performClick());
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
-            lp.gravity = Gravity.CENTER_VERTICAL;
-            header.addView(t, lp);
-            fallback = t;
-            return t;
         }
     }
 }
