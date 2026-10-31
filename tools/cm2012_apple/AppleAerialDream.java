@@ -50,7 +50,11 @@ public class AppleAerialDream extends DreamService {
             }catch(Exception e){removeVideo();}
         }
         label=new TextView(this);
-        label.setTextSize(27);label.setTypeface(null,Typeface.LIGHT);label.setTextColor(Color.WHITE);
+        label.setTextSize(27);
+        label.setTypeface(
+            Typeface.create("sans-serif-light", Typeface.NORMAL)
+        );
+        label.setTextColor(Color.WHITE);
         label.setGravity(Gravity.CENTER);label.setShadowLayer(9f,2f,3f,Color.BLACK);
         FrameLayout.LayoutParams lp=new FrameLayout.LayoutParams(-2,-2,Gravity.BOTTOM|Gravity.LEFT);
         int pad=Math.round(44*getResources().getDisplayMetrics().density);lp.setMargins(pad,0,0,pad);
