@@ -22,9 +22,15 @@ STATUS = JAVA / 'AppleTopStatus53.java'
 QR = JAVA / 'AppleQrMp4Bridge.java'
 MANIFEST = ROOT / 'launcher/app/src/main/AndroidManifest.xml'
 STRINGS = ROOT / 'launcher/app/src/main/res/values/strings.xml'
+# The V5.3 / V5.4 steps must consume the V5.4-compatible source first.
+# Stage V5.5 replacements under distinct filenames to avoid premature injection.
 SOURCES = ('AppleIconManager55.java', 'AppleIconPicker55.java',
-           'AppleBluetoothSettings55.java', 'AppleIconHomeMenu55.java', 'AppleTopStatus53.java',
-           'AppleQrMp4Bridge.java')
+           'AppleBluetoothSettings55.java', 'AppleIconHomeMenu55.java',
+           'AppleTopStatus55.java.txt', 'AppleQrMp4Bridge55.java.txt')
+DEST_NAMES = {
+    'AppleTopStatus55.java.txt': 'AppleTopStatus53.java',
+    'AppleQrMp4Bridge55.java.txt': 'AppleQrMp4Bridge.java',
+}
 MARK = '// CM2012_V55_ICON_BIND'
 
 def fail(message):
@@ -107,9 +113,9 @@ for filename in SOURCES:
     contents = (HERE / filename).read_text(encoding='utf-8')
     if not contents.startswith('package com.gathin.tvhome;'):
         fail('invalid Java source package: ' + filename)
-if 'AppleBluetoothSettings55.open(activity)' not in (HERE / 'AppleTopStatus53.java').read_text(encoding='utf-8'):
+if 'AppleBluetoothSettings55.open(activity)' not in (HERE / 'AppleTopStatus55.java.txt').read_text(encoding='utf-8'):
     fail('new status pill must call dedicated Bluetooth settings')
-new_qr = (HERE / 'AppleQrMp4Bridge.java').read_text(encoding='utf-8')
+new_qr = (HERE / 'AppleQrMp4Bridge55.java.txt').read_text(encoding='utf-8')
 if 'dp(activity, 190)' not in new_qr or 'CountDownLatch' not in new_qr:
     fail('new QR bridge must include compact code and UI transfer confirmation')
 
@@ -214,7 +220,7 @@ for path, contents in outputs.items():
         shutil.copyfile(path, backup_dir / path.name)
         path.write_text(contents, encoding='utf-8')
 for name in SOURCES:
-    shutil.copyfile(HERE / name, JAVA / name)
+    shutil.copyfile(HERE / name, JAVA / DEST_NAMES.get(name, name))
 print('OK V5.5: one Apple icon mapping for Home + Library; App Library long-OK -> change icon')
 print('OK V5.5: built-in styles and local PNG/JPG selection, restore original')
 print('OK V5.5: compact QR with phone-to-TV acknowledgement and address preview')
