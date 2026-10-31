@@ -3,8 +3,8 @@
 """CM2012 Apple V5.5 incremental patch.
 
 Expected order V4 -> V5 -> V5.2.2 -> V5.3 -> V5.4 -> V5.5 -> Gradle.
-Patches known V5.4 sources; aborts without writing when upstream adapters
-lack standard RecyclerView onBindViewHolder hooks.
+Patches known V5.4 sources. Home long-OK hook is optional when
+upstream uses a different signature; Library long-OK remains available.
 """
 from pathlib import Path
 import re
@@ -142,31 +142,34 @@ home_menu_marker = '// CM2012_V55_HOME_LONG_MENU'
 if home_menu_marker not in main:
     home_rx = re.compile(r'\bonTileLongPress\s*\(\s*(?:android\.view\.)?View\s+(\w+)\s*,\s*int\s+(\w+)\s*\)\s*\{')
     home_matches = list(home_rx.finditer(main))
-    if len(home_matches) != 1:
-        fail('MainActivity needs unique onTileLongPress(View,int), found ' + str(len(home_matches)))
-    hm = home_matches[0]
-    if 'private boolean appleV55ShowOriginalMenu;' not in main:
-        field_anchor = 'private AppAdapter adapter;'
-        if main.count(field_anchor) != 1: fail('MainActivity adapter field changed')
-        main = main.replace(field_anchor,
-                            field_anchor + '\n    private boolean appleV55ShowOriginalMenu;', 1)
-        # Insertion above changes indices; repeat the method search below.
-        hm = list(home_rx.finditer(main))[0]
-    view, position = hm.group(1), hm.group(2)
-    preamble = ("\n        " + home_menu_marker + "\n"
-        "        if (!appleV55ShowOriginalMenu) {\n"
-        "            String iconPkg = AppleIconManager55.packageAt(adapter, " + position + ");\n"
-        "            if (iconPkg != null) {\n"
-        "                AppleIconHomeMenu55.show(this, iconPkg, () -> {\n"
-        "                    appleV55ShowOriginalMenu = true;\n"
-        "                    try { onTileLongPress(" + view + ", " + position + "); }\n"
-        "                    finally { appleV55ShowOriginalMenu = false; }\n"
-        "                });\n"
-        "                return;\n"
-        "            }\n"
-        "        }\n")
-    insert_at = hm.end()
-    main = main[:insert_at] + preamble + main[insert_at:]
+    if len(home_matches) == 0:
+        print('NOTE V5.5: MainActivity has no onTileLongPress(View,int); homepage long-OK integration skipped safely.')
+    elif len(home_matches) > 1:
+        fail('MainActivity has multiple onTileLongPress(View,int) methods; cannot choose safely')
+    if len(home_matches) == 1:
+        hm = home_matches[0]
+        if 'private boolean appleV55ShowOriginalMenu;' not in main:
+            field_anchor = 'private AppAdapter adapter;'
+            if main.count(field_anchor) != 1: fail('MainActivity adapter field changed')
+            main = main.replace(field_anchor,
+                                field_anchor + '\n    private boolean appleV55ShowOriginalMenu;', 1)
+            # Insertion above changes indices; repeat the method search below.
+            hm = list(home_rx.finditer(main))[0]
+        view, position = hm.group(1), hm.group(2)
+        preamble = ("\n        " + home_menu_marker + "\n"
+            "        if (!appleV55ShowOriginalMenu) {\n"
+            "            String iconPkg = AppleIconManager55.packageAt(adapter, " + position + ");\n"
+            "            if (iconPkg != null) {\n"
+            "                AppleIconHomeMenu55.show(this, iconPkg, () -> {\n"
+            "                    appleV55ShowOriginalMenu = true;\n"
+            "                    try { onTileLongPress(" + view + ", " + position + "); }\n"
+            "                    finally { appleV55ShowOriginalMenu = false; }\n"
+            "                });\n"
+            "                return;\n"
+            "            }\n"
+            "        }\n")
+        insert_at = hm.end()
+        main = main[:insert_at] + preamble + main[insert_at:]
 
 # Home and Library use the exact same preference/key and drawable replacement.
 # Injection is after their native bind logic. The helper discovers the model's
@@ -222,6 +225,8 @@ for path, contents in outputs.items():
 for name in SOURCES:
     shutil.copyfile(HERE / name, JAVA / DEST_NAMES.get(name, name))
 print('OK V5.5: one Apple icon mapping for Home + Library; App Library long-OK -> change icon')
+if home_menu_marker not in main:
+    print('NOTE V5.5: use App Library long-OK to change an icon; Home will display that icon too')
 print('OK V5.5: built-in styles and local PNG/JPG selection, restore original')
 print('OK V5.5: compact QR with phone-to-TV acknowledgement and address preview')
 print('OK V5.5: Bluetooth opens dedicated settings when ROM provides one')
