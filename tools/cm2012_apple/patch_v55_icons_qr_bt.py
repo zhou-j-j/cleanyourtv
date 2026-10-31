@@ -3,8 +3,8 @@
 """CM2012 Apple V5.5 incremental patch.
 
 Expected order V4 -> V5 -> V5.2.2 -> V5.3 -> V5.4 -> V5.5 -> Gradle.
-Patches known V5.4 sources. Home long-OK hook is optional when
-upstream uses a different signature; Library long-OK remains available.
+Patches known V5.4 sources. Home long-OK uses the confirmed
+onTileLongPress(int position, View card) native popup menu.
 """
 from pathlib import Path
 import re
@@ -134,42 +134,43 @@ if entry not in lib:
     lib = lib.replace(anchor, extra + anchor, 1)
 if lib.count(entry) != 1: fail('duplicate icon menu')
 
-# The original CM2012 MainActivity implements AppAdapter.TileListener and
-# exposes onTileLongPress(View, int). Wrap the existing action; users can
-# choose the new icon picker OR its original management popup. No listener
-# replacement (important for reorder, remove from Home and app info).
-home_menu_marker = '// CM2012_V55_HOME_LONG_MENU'
+# Confirmed from the user's real CleanYourTV MainActivity.java:
+# public void onTileLongPress(int position, View card)
+# The method already builds a PopupWindow menu with addSettingsMenuRow.
+# Insert one native row before the first panel.measure; preserve its existing
+# move/remove/info actions, focus handling and 550ms hold-OK logic.
+home_menu_marker = '// CM2012_V55_HOME_CHANGE_ICON_ROW'
 if home_menu_marker not in main:
-    home_rx = re.compile(r'\bonTileLongPress\s*\(\s*(?:android\.view\.)?View\s+(\w+)\s*,\s*int\s+(\w+)\s*\)\s*\{')
+    home_rx = re.compile(
+        r'\bonTileLongPress\s*\(\s*int\s+(\w+)\s*,\s*'
+        r'(?:android\.view\.)?View\s+(\w+)\s*\)\s*\{')
     home_matches = list(home_rx.finditer(main))
-    if len(home_matches) == 0:
-        print('NOTE V5.5: MainActivity has no onTileLongPress(View,int); homepage long-OK integration skipped safely.')
-    elif len(home_matches) > 1:
-        fail('MainActivity has multiple onTileLongPress(View,int) methods; cannot choose safely')
-    if len(home_matches) == 1:
-        hm = home_matches[0]
-        if 'private boolean appleV55ShowOriginalMenu;' not in main:
-            field_anchor = 'private AppAdapter adapter;'
-            if main.count(field_anchor) != 1: fail('MainActivity adapter field changed')
-            main = main.replace(field_anchor,
-                                field_anchor + '\n    private boolean appleV55ShowOriginalMenu;', 1)
-            # Insertion above changes indices; repeat the method search below.
-            hm = list(home_rx.finditer(main))[0]
-        view, position = hm.group(1), hm.group(2)
-        preamble = ("\n        " + home_menu_marker + "\n"
-            "        if (!appleV55ShowOriginalMenu) {\n"
-            "            String iconPkg = AppleIconManager55.packageAt(adapter, " + position + ");\n"
-            "            if (iconPkg != null) {\n"
-            "                AppleIconHomeMenu55.show(this, iconPkg, () -> {\n"
-            "                    appleV55ShowOriginalMenu = true;\n"
-            "                    try { onTileLongPress(" + view + ", " + position + "); }\n"
-            "                    finally { appleV55ShowOriginalMenu = false; }\n"
-            "                });\n"
-            "                return;\n"
-            "            }\n"
-            "        }\n")
-        insert_at = hm.end()
-        main = main[:insert_at] + preamble + main[insert_at:]
+    if len(home_matches) != 1:
+        fail('MainActivity needs unique onTileLongPress(int,View), found ' + str(len(home_matches)))
+    match = home_matches[0]
+    close = method_braces(main, match.end() - 1)
+    body = main[match.end():close]
+    required_body = (
+        'LinearLayout rows = panel.findViewById(R.id.rows);',
+        'PopupWindow popup = glassPopup(panel,',
+        'String pkg = adapter.packageAt(',
+        'addSettingsMenuRow(rows, popup,',
+    )
+    for marker in required_body:
+        if marker not in body:
+            fail('MainActivity onTileLongPress native menu changed; missing ' + marker)
+    anchor = '        panel.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);'
+    if body.count(anchor) != 1:
+        fail('MainActivity onTileLongPress requires one panel.measure anchor; found ' + str(body.count(anchor)))
+    menu_row = '''        // CM2012_V55_HOME_CHANGE_ICON_ROW
+        addSettingsMenuRow(rows, popup, R.string.cm2012_change_icon,
+                () -> AppleIconPicker55.open(this, pkg));
+'''
+    body = body.replace(anchor, menu_row + anchor, 1)
+    main = main[:match.end()] + body + main[close:]
+else:
+    if main.count(home_menu_marker) != 1:
+        fail('MainActivity contains multiple V5.5 Home icon menu hooks')
 
 # Home and Library use the exact same preference/key and drawable replacement.
 # Injection is after their native bind logic. The helper discovers the model's
@@ -225,8 +226,8 @@ for path, contents in outputs.items():
 for name in SOURCES:
     shutil.copyfile(HERE / name, JAVA / DEST_NAMES.get(name, name))
 print('OK V5.5: one Apple icon mapping for Home + Library; App Library long-OK -> change icon')
-if home_menu_marker not in main:
-    print('NOTE V5.5: use App Library long-OK to change an icon; Home will display that icon too')
+if home_menu_marker in main:
+    print('OK V5.5: Home long-OK native menu includes Change Icon')
 print('OK V5.5: built-in styles and local PNG/JPG selection, restore original')
 print('OK V5.5: compact QR with phone-to-TV acknowledgement and address preview')
 print('OK V5.5: Bluetooth opens dedicated settings when ROM provides one')
