@@ -1,4 +1,4 @@
-name: CM2012 Apple V5.2.1 - All In One
+name: CM2012 Apple V5.6 - Wi-Fi Bluetooth and UI
 
 on:
   workflow_dispatch:
@@ -35,6 +35,12 @@ jobs:
         run: python3 tools/cm2012_apple/patch_v54_pills_qr.py
       - name: V5.5 Icons, Bluetooth Settings and QR Fix
         run: python3 tools/cm2012_apple/patch_v55_icons_qr_bt.py        
+      - name: V5.6 Quick Wi-Fi Bluetooth and focus-safe UI
+        run: python3 tools/cm2012_apple/patch_v56_quick_controls.py
+      - name: V5.6 Quick Wi-Fi Bluetooth and focus-safe UI
+        run: python3 tools/cm2012_apple/patch_v56_quick_controls.py
+      - name: Validate V5.6 integration
+        run: python3 tools/cm2012_apple/test_v56_quick_controls.py
       - name: Compile one APK
         working-directory: launcher
         run: |
@@ -43,7 +49,7 @@ jobs:
       - name: Upload one Apple APK
         uses: actions/upload-artifact@v4
         with:
-          name: CM2012-Apple-V5.2.1-AllInOne
+          name: CM2012-Apple-V5.6-AllInOne
           path: launcher/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 14
