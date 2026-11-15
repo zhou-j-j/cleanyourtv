@@ -1,0 +1,185 @@
+package com.gathin.tvhome;
+
+import android.Manifest;
+import android.app.Activity;
+import android.app.AlertDialog;
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothDevice;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.pm.PackageManager;
+import android.os.Build;
+import android.os.Bundle;
+import android.provider.Settings;
+import android.view.View;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+import android.widget.Toast;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+/** V5.7 Bluetooth: one switch, paired list immediately, discovery in background. */
+public final class AppleBluetoothQuickActivity56 extends Activity {
+    private BluetoothAdapter adapter;
+    private AppleRadioUi57.Toggle toggle;
+    private LinearLayout list;
+    private TextView hint;
+    private boolean registered;
+    private final Map<String,BluetoothDevice> discovered=new HashMap<>();
+    private final BroadcastReceiver receiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context c, Intent i) {
+            String action=i.getAction();
+            if (BluetoothAdapter.ACTION_STATE_CHANGED.equals(action)) { update(); if (isOn()) discover(); }
+            else if (BluetoothDevice.ACTION_FOUND.equals(action)) {
+                BluetoothDevice dev=i.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                if (dev!=null) try { discovered.put(dev.getAddress(),dev); showDevices(); }
+                catch (Exception ignored) { }
+            } else if (BluetoothDevice.ACTION_BOND_STATE_CHANGED.equals(action)) showDevices();
+        }
+    };
+    @Override public void onCreate(Bundle state) {
+        super.onCreate(state);
+        adapter=BluetoothAdapter.getDefaultAdapter();
+        LinearLayout page=AppleRadioUi57.page(this);
+        toggle=AppleRadioUi57.switchRow(this,page,"蓝牙");
+        toggle.action(this::changeRadio);
+        list=new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);
+        lp.topMargin=AppleRadioUi57.dp(this,10);
+        page.addView(list,lp);
+        hint=AppleRadioUi57.hint(this,page);
+        toggle.row.requestFocus();
+    }
+    @Override protected void onStart() {
+        super.onStart();
+        IntentFilter f=new IntentFilter();
+        f.addAction(BluetoothAdapter.ACTION_STATE_CHANGED);
+        f.addAction(BluetoothDevice.ACTION_FOUND);
+        f.addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED);
+        if (Build.VERSION.SDK_INT>=33) registerReceiver(receiver,f,Context.RECEIVER_EXPORTED);
+        else registerReceiver(receiver,f);
+        registered=true;
+        update();
+        discover();
+    }
+    @Override protected void onStop() {
+        registered=false;
+        try { unregisterReceiver(receiver); } catch(Exception ignored) { }
+        try { if(adapter!=null && adapter.isDiscovering()) adapter.cancelDiscovery(); }
+        catch(Exception ignored) { }
+        super.onStop();
+    }
+    private boolean allowedConnect() {
+        return Build.VERSION.SDK_INT<31 || checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)==PackageManager.PERMISSION_GRANTED;
+    }
+    private boolean allowedScan() {
+        return Build.VERSION.SDK_INT<31 || checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)==PackageManager.PERMISSION_GRANTED;
+    }
+    private boolean isOn() {
+        try { return adapter!=null && adapter.isEnabled(); }
+        catch(Exception e) { return false; }
+    }
+    private void changeRadio() {
+        if(adapter==null) return;
+        if (isOn()) {
+            new AlertDialog.Builder(this).setTitle("关闭蓝牙？")
+                    .setMessage("蓝牙遥控器或耳机可能立即断开，请确认有红外遥控器或 USB 键盘。")
+                    .setNegativeButton("取消",null)
+                    .setPositiveButton("关闭蓝牙",(d,w)->setRadio(false)).show();
+        } else setRadio(true);
+    }
+    private void setRadio(boolean on) {
+        try {
+            if (Build.VERSION.SDK_INT >= 33 || !allowedConnect()) { openSystemBluetooth(); return; }
+            if (on ? !adapter.enable() : !adapter.disable()) { openSystemBluetooth(); return; }
+            if (!on) discovered.clear();
+            update();
+        } catch(Exception e) { openSystemBluetooth(); }
+    }
+    private void update() {
+        boolean on=isOn();
+        toggle.setOn(on);
+        list.removeAllViews();
+        if (adapter==null) { hint.setText("本机没有蓝牙适配器"); return; }
+        if (!on) { hint.setText("蓝牙已关闭"); return; }
+        showDevices();
+    }
+    private void discover() {
+        if(!registered || !isOn() || !allowedScan() || !allowedConnect()) return;
+        try {
+            if (!adapter.isDiscovering()) adapter.startDiscovery();
+        } catch(Exception ignored) { /* still show already paired devices */ }
+    }
+    private void showDevices() {
+        if(list==null || !isOn() || !allowedConnect()) return;
+        View focused=getCurrentFocus();
+        Object oldFocus=focused==null?null:focused.getTag();
+        list.removeAllViews();
+        List<BluetoothDevice> paired=new ArrayList<>();
+        try {
+            Set<BluetoothDevice> devices=adapter.getBondedDevices();
+            if(devices!=null) paired.addAll(devices);
+        } catch(Exception ignored) { }
+        Collections.sort(paired,(a,b)->safeName(a).compareToIgnoreCase(safeName(b)));
+        for (BluetoothDevice device:paired) addDevice(device,true);
+        List<BluetoothDevice> nearby=new ArrayList<>(discovered.values());
+        Collections.sort(nearby,(a,b)->safeName(a).compareToIgnoreCase(safeName(b)));
+        for(BluetoothDevice dev:nearby) {
+            boolean bonded=false;
+            try { bonded=dev.getBondState()==BluetoothDevice.BOND_BONDED; }
+            catch(Exception ignored) { }
+            if(!bonded) addDevice(dev,false);
+        }
+        if(paired.isEmpty() && nearby.isEmpty())
+            hint.setText("暂未发现蓝牙设备；已配对设备会直接显示在这里");
+        else if(Build.VERSION.SDK_INT<31 && checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)!=PackageManager.PERMISSION_GRANTED)
+            hint.setText("已显示配对设备；附近新设备可能需要系统定位权限");
+        else hint.setText("");
+        if(oldFocus!=null) for(int i=0;i<list.getChildCount();i++) {
+            View child=list.getChildAt(i);
+            if(oldFocus.equals(child.getTag())) { child.requestFocus(); break; }
+        }
+    }
+    private String safeName(BluetoothDevice device) {
+        try { String n=device.getName(); if(n!=null && !n.trim().isEmpty()) return n; }
+        catch(Exception ignored) { }
+        return "未命名蓝牙设备";
+    }
+    private void addDevice(BluetoothDevice device, boolean paired) {
+        String name=safeName(device);
+        String addr="";
+        try { addr=device.getAddress(); } catch(Exception ignored) { }
+        AppleRadioUi57.Row row=AppleRadioUi57.item(this,list,name,paired?"已配对":"附近设备",null,false);
+        row.root.setTag(addr);
+        row.action(()->{
+            if(paired) {
+                new AlertDialog.Builder(this).setTitle(name).setMessage("该设备已经配对。连接状态由系统蓝牙服务管理。")
+                        .setNegativeButton("返回",null)
+                        .setPositiveButton("系统蓝牙设置",(d,w)->openSystemBluetooth()).show();
+            } else {
+                new AlertDialog.Builder(this).setTitle("配对 " + name + "？")
+                        .setMessage("设备需先进入配对模式，可能还需要确认配对码。")
+                        .setNegativeButton("取消",null).setPositiveButton("配对",(d,w)->pair(device)).show();
+            }
+        });
+    }
+    private void pair(BluetoothDevice device) {
+        try {
+            if(!allowedConnect() || !allowedScan()) return;
+            if(adapter.isDiscovering()) adapter.cancelDiscovery();
+            boolean started=device.createBond();
+            Toast.makeText(this,started?"已发起配对":"配对未成功启动",Toast.LENGTH_SHORT).show();
+        } catch(Exception e) { Toast.makeText(this,"系统拒绝蓝牙配对",Toast.LENGTH_SHORT).show(); }
+    }
+    private void openSystemBluetooth() {
+        try { startActivity(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS)); }
+        catch(Exception e) { Toast.makeText(this,"系统未开放蓝牙设置",Toast.LENGTH_SHORT).show(); }
+    }
+}

@@ -1,0 +1,257 @@
+package com.gathin.tvhome;
+
+import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
+import android.net.wifi.ScanResult;
+import android.net.wifi.WifiConfiguration;
+import android.net.wifi.WifiInfo;
+import android.net.wifi.WifiManager;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.provider.Settings;
+import android.text.InputType;
+import android.view.View;
+import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+import android.widget.Toast;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+
+/** V5.8: immediate cached list, silent auto scan, plus manual refresh on demand. */
+public final class AppleWifiQuickActivity56 extends Activity {
+    private WifiManager wifi;
+    private AppleRadioUi57.Toggle toggle;
+    private LinearLayout list;
+    private TextView hint;
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private boolean registered;
+    private final Runnable poll = new Runnable() {
+        @Override public void run() {
+            if (!registered) return;
+            refreshList();
+            silentScan();
+            handler.postDelayed(this, 45000L);
+        }
+    };
+    private final BroadcastReceiver changes = new BroadcastReceiver() {
+        @Override public void onReceive(Context c, Intent i) {
+            if (WifiManager.WIFI_STATE_CHANGED_ACTION.equals(i.getAction())) refreshList();
+            else if (WifiManager.SCAN_RESULTS_AVAILABLE_ACTION.equals(i.getAction())) {
+                refreshList();
+                if (!i.getBooleanExtra(WifiManager.EXTRA_RESULTS_UPDATED, true))
+                    hint.setText("系统没有更新扫描结果，已显示目前可读取的热点");
+            }
+            else if (WifiManager.NETWORK_STATE_CHANGED_ACTION.equals(i.getAction())) refreshList();
+        }
+    };
+    @Override public void onCreate(Bundle state) {
+        super.onCreate(state);
+        wifi = (WifiManager)getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+        LinearLayout page = AppleRadioUi57.page(this);
+        toggle = AppleRadioUi57.switchRow(this, page, "无线网络", this::manualRefresh);
+        toggle.action(this::changeRadio);
+        list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1,-2);
+        lp.topMargin = AppleRadioUi57.dp(this, 10);
+        page.addView(list,lp);
+        hint = AppleRadioUi57.hint(this, page);
+        toggle.row.requestFocus();
+    }
+    @Override protected void onStart() {
+        super.onStart();
+        IntentFilter f = new IntentFilter();
+        f.addAction(WifiManager.WIFI_STATE_CHANGED_ACTION);
+        f.addAction(WifiManager.NETWORK_STATE_CHANGED_ACTION);
+        f.addAction(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION);
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(changes,f,Context.RECEIVER_NOT_EXPORTED);
+        else registerReceiver(changes,f);
+        registered = true;
+        refreshList(); // never wait for a new scan before showing existing data
+        silentScan();
+        handler.postDelayed(poll,45000L);
+    }
+    @Override protected void onStop() {
+        registered=false;
+        handler.removeCallbacks(poll);
+        try { unregisterReceiver(changes); } catch (Exception ignored) { }
+        super.onStop();
+    }
+    private void changeRadio() {
+        if (wifi == null) return;
+        try {
+            boolean on = wifi.isWifiEnabled();
+            if (Build.VERSION.SDK_INT >= 29 || !wifi.setWifiEnabled(!on)) {
+                openSystemWifi();
+                return;
+            }
+            refreshList();
+            if (!on) handler.postDelayed(() -> { if (registered) { refreshList(); silentScan(); } }, 1200L);
+        } catch (Exception e) { openSystemWifi(); }
+    }
+    private void silentScan() {
+        if (wifi == null) return;
+        try { if (wifi.isWifiEnabled()) wifi.startScan(); }
+        catch (Exception ignored) { /* automatic scans are best effort; manual button shows a diagnostic hint */ }
+    }
+    /** The manual action never changes the Wi-Fi switch or current connection. */
+    private void manualRefresh() {
+        if (!registered || wifi == null) return;
+        refreshList(); // show what is already saved/cached without waiting
+        try {
+            if (!wifi.isWifiEnabled()) {
+                hint.setText("请先打开无线网络，再刷新热点列表");
+                return;
+            }
+            boolean started = wifi.startScan();
+            hint.setText(started ? "正在刷新附近热点…" :
+                    "本次扫描没有启动，已显示现有热点；可检查定位权限或稍后再试");
+        } catch (SecurityException e) {
+            hint.setText("系统拒绝 Wi-Fi 扫描；请检查定位权限和系统定位开关");
+        } catch (Exception e) {
+            hint.setText("暂时无法刷新附近热点，仍显示已有列表");
+        }
+    }
+    private boolean connectedToWifi() {
+        try {
+            ConnectivityManager cm = (ConnectivityManager)getSystemService(Context.CONNECTIVITY_SERVICE);
+            NetworkInfo wifiState = cm == null ? null : cm.getNetworkInfo(ConnectivityManager.TYPE_WIFI);
+            return wifiState != null && wifiState.isConnected();
+        } catch (Exception e) { return false; }
+    }
+    private String currentSsid() {
+        try {
+            WifiInfo info = wifi.getConnectionInfo();
+            if (info != null && info.getSSID() != null) {
+                String raw = info.getSSID().replace("\"", "");
+                if (!raw.isEmpty() && !raw.equalsIgnoreCase("<unknown ssid>")) return raw;
+            }
+        } catch (Exception ignored) { }
+        return "当前无线网络";
+    }
+    private void refreshList() {
+        if (list == null) return;
+        View focus = getCurrentFocus();
+        Object oldFocus = focus == null ? null : focus.getTag();
+        list.removeAllViews();
+        if (wifi == null) { hint.setText("此设备没有无线网络服务"); return; }
+        boolean enabled;
+        try { enabled = wifi.isWifiEnabled(); }
+        catch (Exception e) { hint.setText("无法读取 Wi-Fi 状态"); return; }
+        toggle.setOn(enabled);
+        if (!enabled) { hint.setText("无线网络已关闭"); return; }
+        final boolean connected = connectedToWifi();
+        final String current = currentSsid();
+        HashSet<String> shown = new HashSet<>();
+        if (connected) {
+            int strength=0;
+            try { strength = WifiManager.calculateSignalLevel(wifi.getConnectionInfo().getRssi(),5); }
+            catch (Exception ignored) { }
+            addRow(current,"已连接",strength,true,null);
+            shown.add(current);
+        }
+        List<ScanResult> scans = new ArrayList<>();
+        boolean blocked = false;
+        try { List<ScanResult> obtained = wifi.getScanResults(); if (obtained != null) scans.addAll(obtained); }
+        catch (SecurityException e) { blocked = true; }
+        catch (Exception e) { blocked = true; }
+        Collections.sort(scans,(a,b)->Integer.compare(b.level,a.level));
+        for (ScanResult sr:scans) {
+            if (sr.SSID==null || sr.SSID.trim().isEmpty() || !shown.add(sr.SSID)) continue;
+            String cap=sr.capabilities==null?"":sr.capabilities;
+            boolean secured = cap.contains("PSK")||cap.contains("EAP")||cap.contains("WEP")||cap.contains("SAE");
+            addRow(sr.SSID,secured?"加密":"",WifiManager.calculateSignalLevel(sr.level,5),false,()->connect(sr));
+        }
+        // ROMs may expose already saved SSIDs even when scan results are restricted.
+        try {
+            List<WifiConfiguration> saved=wifi.getConfiguredNetworks();
+            if (saved!=null) for (WifiConfiguration c:saved) {
+                if (c.SSID==null) continue;
+                String ssid=c.SSID.replace("\"", "");
+                if (ssid.isEmpty() || !shown.add(ssid)) continue;
+                addRow(ssid,"已保存",0,false,()->openSystemWifi());
+            }
+        } catch (Exception ignored) { }
+        if (shown.isEmpty()) hint.setText(blocked ? "系统限制附近热点读取，请在系统设置允许定位权限及定位开关" : "暂无可显示的无线热点");
+        else if (blocked && scans.isEmpty()) hint.setText("已显示当前/已保存网络；其他热点受 Android 系统定位权限限制");
+        else hint.setText("");
+        if (oldFocus != null) {
+            for (int i=0;i<list.getChildCount();i++) {
+                View child=list.getChildAt(i);
+                if (oldFocus.equals(child.getTag())) { child.requestFocus(); break; }
+            }
+        }
+    }
+    private void addRow(String ssid,String label,int level,boolean connected,Runnable action) {
+        AppleRadioUi57.Row row=AppleRadioUi57.item(this,list,ssid,label,
+                new NetworkStatusDrawable(getResources().getDisplayMetrics().density,
+                        NetworkStatusDrawable.WIFI,level,connected),connected);
+        row.root.setTag(ssid);
+        row.action(action == null ? () -> { } : action);
+    }
+    private void connect(ScanResult sr) {
+        if (Build.VERSION.SDK_INT >= 29) { openSystemWifi(); return; }
+        final String caps = sr.capabilities == null ? "" : sr.capabilities;
+        if (caps.contains("EAP") || caps.contains("SAE")) {
+            new AlertDialog.Builder(this).setTitle(sr.SSID)
+                    .setMessage("该热点使用企业认证或 WPA3，请使用系统无线网络设置连接。")
+                    .setNegativeButton("取消", null)
+                    .setPositiveButton("打开系统设置", (d, w) -> openSystemWifi()).show();
+            return;
+        }
+        boolean protectedNetwork = caps.contains("PSK") || caps.contains("WEP");
+        EditText password = new EditText(this);
+        password.setSingleLine(true);
+        password.setHint("Wi-Fi 密码");
+        password.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        AlertDialog.Builder prompt = new AlertDialog.Builder(this).setTitle("连接 " + sr.SSID)
+                .setMessage(protectedNetwork ? "请输入热点密码后连接" : "连接到此开放热点？")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("连接", (d, which) -> connectLegacy(sr, protectedNetwork ? password.getText().toString() : ""));
+        if (protectedNetwork) prompt.setView(password);
+        prompt.show();
+    }
+    @SuppressWarnings("deprecation")
+    private void connectLegacy(ScanResult sr, String password) {
+        try {
+            WifiConfiguration c = new WifiConfiguration();
+            c.SSID = "\"" + sr.SSID.replace("\"", "\\\"") + "\"";
+            String caps = sr.capabilities == null ? "" : sr.capabilities;
+            if (caps.contains("WEP")) {
+                c.wepKeys[0] = "\"" + password + "\"";
+                c.wepTxKeyIndex = 0;
+                c.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.NONE);
+                c.allowedGroupCiphers.set(WifiConfiguration.GroupCipher.WEP40);
+            } else if (caps.contains("PSK")) {
+                if (password.length() < 8) { Toast.makeText(this, "密码至少需要 8 位", Toast.LENGTH_LONG).show(); return; }
+                c.preSharedKey = "\"" + password.replace("\"", "\\\"") + "\"";
+                c.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.WPA_PSK);
+            } else {
+                c.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.NONE);
+            }
+            int id = wifi.addNetwork(c);
+            if (id < 0 || !wifi.enableNetwork(id, true)) {
+                Toast.makeText(this, "固件未允许直接连接，请到系统无线设置连接", Toast.LENGTH_LONG).show(); return;
+            }
+            wifi.reconnect();
+            hint.setText("正在连接 " + sr.SSID + "…");
+        } catch (Exception ex) {
+            Toast.makeText(this, "连接失败，请使用原厂无线设置", Toast.LENGTH_LONG).show();
+        }
+    }
+    private void openSystemWifi() {
+        try { startActivity(new Intent(Settings.ACTION_WIFI_SETTINGS)); }
+        catch (Exception ex) { Toast.makeText(this, "系统未开放无线设置", Toast.LENGTH_LONG).show(); }
+    }
+}
